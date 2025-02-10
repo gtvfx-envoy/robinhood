@@ -8,6 +8,8 @@ import uuid
 import requests
 from nacl.signing import SigningKey
 
+from ._decorators import logFunc
+
 
 def _get_keys():
     """ """
@@ -47,13 +49,15 @@ class CryptoAPITrading:
 
         return "?" + "&".join(params)
 
+    @logFunc(force=True)
     def make_api_request(self, method: str, path: str, body: str = "") -> Any:
         timestamp = self._get_current_timestamp()
         headers = self.get_authorization_header(method, path, body, timestamp)
         url = self.base_url + path
 
-        print(f"Requesting {url} with headers: {headers}")
-        print(f"Data: {body}")
+        print(f"url: {url}")
+        print(f"headers: {headers}")
+        print(f"body: {body}")
 
         try:
             response = {}
@@ -68,6 +72,7 @@ class CryptoAPITrading:
             print(f"Error making API request: {e}")
             return None
 
+    @logFunc(force=True)
     def get_authorization_header(
             self, method: str, path: str, body: str, timestamp: int
     ) -> Dict[str, str]:
@@ -113,6 +118,7 @@ class CryptoAPITrading:
         path = f"/api/v1/crypto/marketdata/estimated_price/?symbol={symbol}&side={side}&quantity={quantity}"
         return self.make_api_request("GET", path)
 
+    @logFunc(force=True)
     def place_order(
             self,
             client_order_id: str,

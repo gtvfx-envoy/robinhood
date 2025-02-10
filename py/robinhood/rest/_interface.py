@@ -9,6 +9,7 @@ import uuid
 from nacl.signing import SigningKey
 
 from ._baseInterface import BaseInterface
+from ._decorators import logFunc
 
 
 def _get_keys():
@@ -60,22 +61,20 @@ class Robinhood(BaseInterface):
         """Get the base URL for the blsever REST API"""
         return "https://trading.robinhood.com"
 
-    def _get_authorization_header(self,
-                                  method: str,
-                                  path: str,
-                                  body: dict,
-                                  timestamp: int) -> Dict[str, str]:
+    @logFunc(force=True)
+    def _get_authorization_header(self, method: str, path: str,
+                                  body: str, timestamp: int) -> Dict[str, str]:
         """
         
         
         """
         method = self.method_mapping.get(method)
+
         if not path.startswith("/"):
             path = f"/{path}"
-        body = body if body else ""
 
         message_to_sign = f"{self.api_key}{timestamp}{path}{method}{body}"
-        print("message_to_sign: ", message_to_sign)
+        print("message_to_sign:", message_to_sign)
         signed = self.private_key.sign(message_to_sign.encode("utf-8"))
 
         return {

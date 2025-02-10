@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 from ._abc_singleton import ABCSingleton
 from ._captureException import CaptureException
+from ._decorators import logFunc
 
 
 __all__ = [
@@ -55,7 +56,8 @@ class BaseInterface(ABCSingleton):
         return int(datetime.now(tz=timezone.utc).timestamp())
     
     @CaptureException
-    def _request(self, method, endpoint: str, data=None) -> Dict[str, Any]:
+    @logFunc(force=True)
+    def _request(self, method, endpoint: str, body: str=""):
         """Perform a request to the REST API
         
         Args:
@@ -67,31 +69,33 @@ class BaseInterface(ABCSingleton):
             Union[dict, list]: Returns a JSON object. Can be a list[dict] or dict.
         
         """
-        if data is None:
-            data = {}
-
         timestamp = self._get_current_timestamp()
-        headers = self._get_authorization_header(method, endpoint, data, timestamp)
-        
+        headers = self._get_authorization_header(method, endpoint, body, timestamp)
         url = urljoin(self.base_url, endpoint)
-        print(f"Requesting {url} with headers: {headers}")
-        print(f"Data: {data}")
+
+        print(f"url: {url}")
+        print(f"headers: {headers}")
+
         if method == self.session.get:
             response = method(url, headers=headers, timeout=self.timeout)
         elif method == self.session.post:
-            response = method(url, headers=headers, json=data, timeout=self.timeout)
-        
+            if body == "":
+                body = "{}"
+            response = method(url, headers=headers, json=body, timeout=self.timeout)
+
         if not response:
-            raise RestException(f"{response.status_code}: {response.text}")
+            raise RestException(f"{response.status_code}, {response.reason}: {response.text}")
         return response.json()
     
+    @logFunc(force=True)
     @abstractmethod
     def _get_authorization_header(
             self, method: str, path: str, body: str, timestamp: int
     ) -> Dict[str, str]:
         raise NotImplementedError
 
-    def get(self, endpoint, data=None):
+    @logFunc(force=True)
+    def get(self, endpoint):
         """Perform a GET request to the REST API
         
         Args:
@@ -102,9 +106,10 @@ class BaseInterface(ABCSingleton):
             dict: response for the function requested.
         
         """
-        return self._request(self.session.get, endpoint, data)
+        return self._request(self.session.get, endpoint)
 
-    def post(self, endpoint, data=None):
+    @logFunc(force=True)
+    def post(self, endpoint, body=""):
         """Perform a POST request to the REST API
         
         Args:
@@ -115,7 +120,7 @@ class BaseInterface(ABCSingleton):
             dict: The response from the request.
         
         """
-        return self._request(self.session.post, endpoint, data)
+        return self._request(self.session.post, endpoint, body=body)
 
     def put(self, endpoint, data=None):
         """Perform a PUT request to the REST API

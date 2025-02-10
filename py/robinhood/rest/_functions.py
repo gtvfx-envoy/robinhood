@@ -4,7 +4,7 @@
 Examples:
 https://docs.robinhood.com/crypto/trading/#tag/Trading/operation/api_v1_crypto_trading_orders
 
-### Place New Crypto Order
+### Order config examples
 `Payload`
 {
   "symbol": "string",
@@ -41,6 +41,7 @@ import json
 from typing import Any, Dict, Optional
 import uuid
 
+from ._decorators import logFunc
 from ._enums import OrderSides, EstimateSides, OrderState, OrderType, TimeInForce
 from ._interface import Robinhood as rh
 
@@ -65,6 +66,7 @@ __all__ = [
 ]
 
 
+@logFunc(force=True)
 def get_query_params(key: str, *args: Optional[str]) -> str:
     if not args:
         return ""
@@ -75,7 +77,7 @@ def get_query_params(key: str, *args: Optional[str]) -> str:
 
     return "?" + "&".join(params)
 
-
+@logFunc(force=True)
 def get_account() -> Any:
     """
     
@@ -92,6 +94,7 @@ def get_account() -> Any:
 
 # The symbols argument must be formatted in trading pairs, e.g "BTC-USD", "ETH-USD". If no symbols are provided,
 # all supported symbols will be returned
+@logFunc(force=True)
 def get_trading_pairs(*symbols: Optional[str]) -> Any:
     """
     
@@ -109,6 +112,7 @@ def get_trading_pairs(*symbols: Optional[str]) -> Any:
 
 # The asset_codes argument must be formatted as the short form name for a crypto, e.g "BTC", "ETH". If no asset
 # codes are provided, all crypto holdings will be returned
+@logFunc(force=True)
 def get_holdings(*asset_codes: Optional[str]) -> Any:
     """
     
@@ -126,6 +130,7 @@ def get_holdings(*asset_codes: Optional[str]) -> Any:
 
 # The symbols argument must be formatted in trading pairs, e.g "BTC-USD", "ETH-USD". If no symbols are provided,
 # the best bid and ask for all supported symbols will be returned
+@logFunc(force=True)
 def get_best_bid_ask(*symbols: Optional[str]) -> Any:
     """
     
@@ -144,6 +149,7 @@ def get_best_bid_ask(*symbols: Optional[str]) -> Any:
 # The symbol argument must be formatted in a trading pair, e.g "BTC-USD", "ETH-USD"
 # The side argument must be "bid", "ask", or "both".
 # Multiple quantities can be specified in the quantity argument, e.g. "0.1,1,1.999".
+@logFunc(force=True)
 def get_estimated_price(symbol: str, side: str, quantity: str) -> Any:
     """
     
@@ -154,10 +160,13 @@ def get_estimated_price(symbol: str, side: str, quantity: str) -> Any:
         JSON
     
     """
+    assert side.lower() in EstimateSides._value2member_map_, f"side must be one of {[v.value for v in EstimateSides]}"
+
     path = f"/api/v1/crypto/marketdata/estimated_price/?symbol={symbol}&side={side}&quantity={quantity}"
     return rh().get(path)
 
 
+@logFunc(force=True)
 def place_order(side: str,
                 order_type: str,
                 symbol: str,
@@ -189,12 +198,11 @@ def place_order(side: str,
         f"{order_type}_order_config": order_config,
     }
 
-    print("body: ", body)
-
     path = "/api/v1/crypto/trading/orders/"
-    return rh().post(path, data=body)
+    return rh().post(path, body=json.dumps(body))
 
 
+@logFunc(force=True)
 def place_market_order(side, symbol, quantity, client_order_id=""):
     """
     
@@ -211,6 +219,7 @@ def place_market_order(side, symbol, quantity, client_order_id=""):
                        client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def place_market_buy(symbol, quantity, client_order_id=""):
     """
     
@@ -222,6 +231,7 @@ def place_market_buy(symbol, quantity, client_order_id=""):
                               client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def place_market_sell(symbol, quantity, client_order_id=""):
     """
     
@@ -233,6 +243,7 @@ def place_market_sell(symbol, quantity, client_order_id=""):
                               client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def place_limit_order(side, symbol, quantity,
                       limit_price, time_in_force, client_order_id=""):
     """
@@ -254,6 +265,7 @@ def place_limit_order(side, symbol, quantity,
                        client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def place_limit_buy(symbol, quantity, limit_price,
                     time_in_force, client_order_id=""):
     """
@@ -268,6 +280,7 @@ def place_limit_buy(symbol, quantity, limit_price,
                              client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def place_limit_sell(symbol, quantity, limit_price,
                      time_in_force, client_order_id=""):
     """
@@ -282,6 +295,7 @@ def place_limit_sell(symbol, quantity, limit_price,
                              client_order_id=client_order_id)
 
 
+@logFunc(force=True)
 def cancel_order(order_id: str) -> Dict[str, Any]:
     """
     
@@ -291,6 +305,7 @@ def cancel_order(order_id: str) -> Dict[str, Any]:
     return rh().post(path)
 
 
+@logFunc(force=True)
 def get_order(order_id: str) -> Dict[str, Any]:
     """
     
@@ -300,6 +315,7 @@ def get_order(order_id: str) -> Dict[str, Any]:
     return rh().get(path)
     
 
+@logFunc(force=True)
 def get_orders() -> Dict[str, Any]:
     """
     
