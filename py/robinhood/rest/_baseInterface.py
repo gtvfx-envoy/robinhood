@@ -53,6 +53,8 @@ class BaseInterface(ABCSingleton):
 
     @staticmethod
     def _get_current_timestamp() -> int:
+        # import time
+        # return str(int(time.time()))
         return int(datetime.now(tz=timezone.utc).timestamp())
     
     @CaptureException
@@ -79,8 +81,7 @@ class BaseInterface(ABCSingleton):
         if method == self.session.get:
             response = method(url, headers=headers, timeout=self.timeout)
         elif method == self.session.post:
-            if body == "":
-                body = "{}"
+            body = body or "{}" # Ensure a JSON serializable object is passed
             response = method(url, headers=headers, json=body, timeout=self.timeout)
 
         if not response:
@@ -95,12 +96,11 @@ class BaseInterface(ABCSingleton):
         raise NotImplementedError
 
     @logFunc(force=True)
-    def get(self, endpoint):
+    def get(self, endpoint: str):
         """Perform a GET request to the REST API
         
         Args:
             endpoint(str): The endpoint to request.
-            data(dict): The data to send with the request.
             
         Returns:
             dict: response for the function requested.
@@ -109,12 +109,12 @@ class BaseInterface(ABCSingleton):
         return self._request(self.session.get, endpoint)
 
     @logFunc(force=True)
-    def post(self, endpoint, body=""):
+    def post(self, endpoint: str, body: str=""):
         """Perform a POST request to the REST API
         
         Args:
             endpoint(str): The endpoint to send the request to.
-            data(dict): The data to send with the request.
+            body(str): JSON serializable object to send with the request.
             
         Returns:
             dict: The response from the request.

@@ -185,13 +185,8 @@ def place_order(side: str,
     assert order_type.lower() in OrderType._value2member_map_, f"side must be one of {[v.value for v in OrderType]}"
 
 
-    client_order_id = client_order_id or str(uuid.uuid4())
-
-    print(f"client_order_id: {client_order_id}")
-    print("order_config: ", order_config)
-
     body = {
-        "client_order_id": client_order_id,
+        "client_order_id": client_order_id or str(uuid.uuid4()),
         "side": side,
         "type": order_type,
         "symbol": symbol,
@@ -199,7 +194,7 @@ def place_order(side: str,
     }
 
     path = "/api/v1/crypto/trading/orders/"
-    return rh().post(path, body=json.dumps(body))
+    return rh().post(path, body=json.dumps(body)) # Ensure compact JSON format
 
 
 @logFunc(force=True)
@@ -253,8 +248,8 @@ def place_limit_order(side, symbol, quantity,
     assert time_in_force.lower() in TimeInForce._value2member_map_, f"side must be one of {[v.value for v in TimeInForce]}"
     
     order_config = {
-        "asset_quantity": str(quantity),
-        "limit_price": str(limit_price),
+        "asset_quantity": quantity,
+        "limit_price": limit_price,
         "time_in_force": time_in_force.lower()
     }
 

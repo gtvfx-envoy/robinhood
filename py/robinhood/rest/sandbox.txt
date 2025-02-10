@@ -1,44 +1,35 @@
 >>> ct.place_order(str(uuid.uuid4()), "sell", "limit", "BTC-USD", body)
 
-body: {'client_order_id': '046f68d4-7d81-4793-9a83-012f5ab38303', 'side': 'sell', 'type': 'limit', 'symbol': 'BTC-USD', 'limit_order_config': {'asset_quantity': '0.00001',
-       'limit_price': '100000', 'time_in_force': 'gtc'}}
+call: <stdin> | place_order(<robinhood.rest._example_interface.CryptoAPITrading object at 0x00000178E05C53D0>, '6a37524b-5b34-4a7e-b60a-6d1052ad3d65', 'sell', 'limit', 'BTC-USD', {'asset_quantity': '0.00001', 'limit_price': '100000', 'time_in_force': 'gtc')
 
-message_to_sign: rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c01739147312/api/v1/crypto/trading/orders/POST{"client_order_id": "046f68d4-7d81-4793-9a83-012f5ab38303",
-                 "side": "sell", "type": "limit", "symbol": "BTC-USD", "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}}
+call: ...\repo\robinhood\py\robinhood\rest\_example_interface.py | make_api_request(<robinhood.rest._example_interface.CryptoAPITrading object at 0x00000178E05C53D0>, 'POST', '/api/v1/crypto/trading/orders/', '{"client_order_id": "6a37524b-5b34-4a7e-b60a-6d1052ad3d65", "side": "sell", "type": "limit", "symbol": "BTC-USD", "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}})
 
-Requesting https://trading.robinhood.com/api/v1/crypto/trading/orders/
-with headers: {'x-api-key': 'rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c0',
-               'x-signature': '+aFdJdkPSWkUCqU3anPK/tFg9y3ilYJpCvgiNYhrUzyBS1DpNLMUaVcC504sAcIKKp1eJrBjoMz6aQzklSoLAg==',
-               'x-timestamp': '1739147312'}
+call: ...\repo\robinhood\py\robinhood\rest\_example_interface.py | get_authorization_header(<robinhood.rest._example_interface.CryptoAPITrading object at 0x00000178E05C53D0>, 'POST', '/api/v1/crypto/trading/orders/', '{"client_order_id": "6a37524b-5b34-4a7e-b60a-6d1052ad3d65", "side": "sell", "type": "limit", "symbol": "BTC-USD", "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}}', 173920156)
 
-Data: {"client_order_id": "046f68d4-7d81-4793-9a83-012f5ab38303", "side": "sell", "type": "limit", "symbol": "BTC-USD",
-       "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}}
+message_to_sign: rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c01739201565/api/v1/crypto/trading/orders/POST{"client_order_id": "6a37524b-5b34-4a7e-b60a-6d1052ad3d65", "side": "sell", "type": "limit", "symbol": "BTC-USD", "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}}
 
+url: https://trading.robinhood.com/api/v1/crypto/trading/orders/
 
-
-{'symbol': 'BTC-USD', 'client_order_id': '046f68d4-7d81-4793-9a83-012f5ab38303', 'side': 'sell', 'type': 'limit', 'id': '67a94831-b817-4231-a725-3e6fbb47a5f6',
-'account_number': '311115941924', 'state': 'open', 'filled_asset_quantity': '0.000000000000000000', 'executions': [], 'average_price': None,
-'created_at': '2025-02-09T19:28:33.681026-05:00', 'updated_at': '2025-02-09T19:28:33.851411-05:00', 'limit_order_config': {'asset_quantity': '0.000010000000000000',
-'limit_price': '100000.000000000000000000'}}
+headers: {'x-api-key': 'rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c0', 'x-signature': 'QcV5mH9P7d9t4aU066wx59fNDAYqLHaP957Cuu75ZWb2xkaoxc39JUC7RvSRGRoxL2ctFAG6FeDIECYTFAq8Ag==', 'x-timestamp': '1739201565'}
 
 #########################################################
 
->>> order = rh.place_limit_sell("BTC-USD", "0.00001", "100000", "gtc")
+>>> order = rh.place_limit_sell("BTC-USD", "0.00001", "100000", "gtc", client_order_id=str(uuid.uuid4()))
 
-client_order_id: 4a7deb61-79c8-45c9-8306-3da8c95cfa83
+call: <stdin> | place_limit_sell('BTC-USD', '0.00001', '100000', 'gtc, client_order_id=823d1a9c-5a5e-44c9-9387-eab04798f901)
 
-order_config:  {'asset_quantity': '0.00001', 'limit_price': '100000', 'time_in_force': 'gtc'}
+call: ...\repo\robinhood\py\robinhood\rest\_functions.py | place_limit_order('sell', 'BTC-USD', '0.00001', '100000', 'gtc, client_order_id=823d1a9c-5a5e-44c9-9387-eab04798f901)
 
-body:  {'client_order_id': '4a7deb61-79c8-45c9-8306-3da8c95cfa83', 'side': 'sell', 'type': 'limit', 'symbol': 'BTC-USD',
-        'limit_order_config': {'asset_quantity': '0.00001', 'limit_price': '100000', 'time_in_force': 'gtc'}}
+call: ...\repo\robinhood\py\robinhood\rest\_functions.py | place_order('sell', 'limit', 'BTC-USD', {'asset_quantity': '0.00001', 'limit_price': '100000', 'time_in_force': 'gtc', client_order_id=823d1a9c-5a5e-44c9-9387-eab04798f901)
 
-message_to_sign:  rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c01739147688/api/v1/crypto/trading/orders/POST{'client_order_id': '4a7deb61-79c8-45c9-8306-3da8c95cfa83',
-                  'side': 'sell', 'type': 'limit', 'symbol': 'BTC-USD', 'limit_order_config': {'asset_quantity': '0.00001', 'limit_price': '100000', 'time_in_force': 'gtc'}}
+call: ...\repo\robinhood\py\robinhood\rest\_functions.py | post(<robinhood.rest._interface.Robinhood object at 0x00000178E06A5220>, '/api/v1/crypto/trading/orders/, body={"client_order_id":"823d1a9c-5a5e-44c9-9387-eab04798f901","side":"sell","type":"limit","symbol":"BTC-USD","limit_order_config":{"asset_quantity":"0.00001","limit_price":"100000","time_in_force":"gtc"}})
 
-Requesting https://trading.robinhood.com/api/v1/crypto/trading/orders/
-with headers: {'x-api-key': 'rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c0',
-               'x-signature': 'bDL1ZuQuA07nV2cgPrarayCRyRFpttSwwlvVQr2sEsKuC4Gd7ua59Ihz4EYBThKKfv62jfeHHxanOnj0Bbx2DQ==',
-               'x-timestamp': '1739147688'}
+call: ...\repo\robinhood\py\robinhood\rest\_captureException.py | _request(<robinhood.rest._interface.Robinhood object at 0x00000178E06A5220>, <bound method Session.post of <requests.sessions.Session object at 0x00000178DFEB2ED0>>, '/api/v1/crypto/trading/orders/, body={"client_order_id":"823d1a9c-5a5e-44c9-9387-eab04798f901","side":"sell","type":"limit","symbol":"BTC-USD","limit_order_config":{"asset_quantity":"0.00001","limit_price":"100000","time_in_force":"gtc"}})
 
-Data: {"client_order_id": "4a7deb61-79c8-45c9-8306-3da8c95cfa83", "side": "sell", "type": "limit", "symbol": "BTC-USD",
-       "limit_order_config": {"asset_quantity": "0.00001", "limit_price": "100000", "time_in_force": "gtc"}}
+call: ...\repo\robinhood\py\robinhood\rest\_baseInterface.py | _get_authorization_header(<robinhood.rest._interface.Robinhood object at 0x00000178E06A5220>, <bound method Session.post of <requests.sessions.Session object at 0x00000178DFEB2ED0>>, '/api/v1/crypto/trading/orders/', '{"client_order_id":"823d1a9c-5a5e-44c9-9387-eab04798f901","side":"sell","type":"limit","symbol":"BTC-USD","limit_order_config":{"asset_quantity":"0.00001","limit_price":"100000","time_in_force":"gtc"}}', 173920147)
+
+message_to_sign: rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c01739201478/api/v1/crypto/trading/orders/POST{"client_order_id":"823d1a9c-5a5e-44c9-9387-eab04798f901","side":"sell","type":"limit","symbol":"BTC-USD","limit_order_config":{"asset_quantity":"0.00001","limit_price":"100000","time_in_force":"gtc"}}
+
+url: https://trading.robinhood.com/api/v1/crypto/trading/orders/
+
+headers: {'Content-Type': 'application/json', 'x-api-key': 'rh-api-825bfc0e-dab8-48bc-8d8a-3090c6b6d8c0', 'x-signature': 'dUafNwyynTllgqf2vvKxDUH2R3yDuUUGP59hkXN57DmNY9tOCaPdmGrAVr9aq8zC0uVsuwYDV1rLahkROWrTDQ==', 'x-timestamp': '1739201478'}

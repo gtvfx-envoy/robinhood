@@ -50,22 +50,20 @@ class CryptoAPITrading:
         return "?" + "&".join(params)
 
     @logFunc(force=True)
-    def make_api_request(self, method: str, path: str, body: str = "") -> Any:
+    def make_api_request(self, method: str, path: str, body: str="") -> Any:
         timestamp = self._get_current_timestamp()
         headers = self.get_authorization_header(method, path, body, timestamp)
         url = self.base_url + path
 
         print(f"url: {url}")
         print(f"headers: {headers}")
-        print(f"body: {body}")
 
         try:
             response = {}
             if method == "GET":
                 response = requests.get(url, headers=headers, timeout=10)
             elif method == "POST":
-                if body == "":
-                    body = "{}"
+                body = body or "{}" # Ensure a JSON serializable object is passed
                 response = requests.post(url, headers=headers, json=json.loads(body), timeout=10)
             return response.json()
         except requests.RequestException as e:
@@ -134,8 +132,6 @@ class CryptoAPITrading:
             "symbol": symbol,
             f"{order_type}_order_config": order_config,
         }
-
-        print("body:", body)
 
         path = "/api/v1/crypto/trading/orders/"
         return self.make_api_request("POST", path, json.dumps(body))
