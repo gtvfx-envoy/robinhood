@@ -65,7 +65,11 @@ class CryptoAPITrading:
             elif method == "POST":
                 body = body or "{}" # Ensure a JSON serializable object is passed
                 response = requests.post(url, headers=headers, json=json.loads(body), timeout=10)
-            return response.json()
+            
+            if response:
+                return response.json()
+            else:
+                raise requests.RequestException(response.text)
         except requests.RequestException as e:
             print(f"Error making API request: {e}")
             return None
