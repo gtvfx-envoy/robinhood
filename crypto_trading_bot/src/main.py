@@ -9,7 +9,7 @@ from .notifications import Notifier
 from .performance_tracker import PerformanceTracker
 from .machine_learning import MachineLearningModel
 
-def main():
+def main(iterations: int | None = 1):
     print("Initializing trading bot components...")
 
     # --- Configuration Notes ---
@@ -85,7 +85,8 @@ def main():
 
     print("Starting TradingBot main loop...")
     try:
-        while True:
+        count = 0
+        while iterations is None or count < iterations:
             # Ensure your TradingBot has a run method
             if hasattr(trading_bot, 'run') and callable(getattr(trading_bot, 'run')):
                 trading_bot.run() 
@@ -94,6 +95,7 @@ def main():
                 break
             # Consider making the sleep duration configurable
             time.sleep(60)  # Check/run trading logic every minute
+            count += 1
     except KeyboardInterrupt:
         print("\nTrading bot stopped by user (KeyboardInterrupt).")
     except Exception as e:
@@ -113,4 +115,4 @@ if __name__ == "__main__":
     os.makedirs("data/ml_models", exist_ok=True)
     os.makedirs("data/historical_data", exist_ok=True) # For placing training data
 
-    main()
+    main(iterations=None)
