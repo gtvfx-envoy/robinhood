@@ -3,8 +3,10 @@
 import base64
 import datetime
 import json
-from typing import Any, Dict, Optional
+import os
 import uuid
+from typing import Any, Dict, Optional
+
 import requests
 from nacl.signing import SigningKey
 from urllib.parse import quote, urljoin
@@ -12,17 +14,23 @@ from urllib.parse import quote, urljoin
 from ._decorators import logFunc
 
 
-def _get_keys():
-    """ """
-    SERVICE_KEY_FILE = "//THO_CLOUD/gavyn/service/robinhood.json"
-    with open(SERVICE_KEY_FILE, 'r') as key_file:
-        data = json.load(key_file)
-    return data
+def _get_keys(service_key_file: str = "//THO_CLOUD/gavyn/service/robinhood.json") -> Dict[str, str]:
+    """Load API keys from ``service_key_file`` if it exists.
+
+    The original implementation attempted to read the service key file at import
+    time which caused ``FileNotFoundError`` during test collection.  The function
+    now returns an empty dictionary when the file is missing so that ``ApiClient``
+    can still be instantiated in tests without real credentials.
+    """
+
+    try:
+        with open(service_key_file, "r") as key_file:
+            return json.load(key_file)
+    except FileNotFoundError:
+        # In test environments the service file will not be present.
+        return {}
 
 
-KEYS = _get_keys()
-API_KEY = KEYS.get("api")
-BASE64_PRIVATE_KEY = KEYS.get("private")
 
 
 class ApiClient:
@@ -38,10 +46,26 @@ class ApiClient:
         base_url (str): The base URL for the Robinhood Crypto Trading API.
 
     """
-    def __init__(self):
-        self.api_key = API_KEY
-        private_key_seed = base64.b64decode(BASE64_PRIVATE_KEY)
-        self.private_key = SigningKey(private_key_seed)
+    def __init__(self, key_file: str | None = None):
+        """Create the API client.
+
+        ``key_file`` allows tests to pass in a dummy location.  When the file is
+        missing, the client will simply operate without credentials which is
+        sufficient for the unit tests where all network interaction is mocked.
+        """
+
+        keys = _get_keys(key_file or "//THO_CLOUD/gavyn/service/robinhood.json")
+        self.api_key = keys.get("api", "")
+        private_b64 = keys.get("private", "")
+        if private_b64:
+            try:
+                private_key_seed = base64.b64decode(private_b64)
+                self.private_key = SigningKey(private_key_seed)
+            except Exception:
+                self.private_key = None
+        else:
+            self.private_key = None
+
         self.base_url = "https://trading.robinhood.com"
 
     @staticmethod
