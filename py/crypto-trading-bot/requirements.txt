@@ -1,0 +1,12 @@
+Pandas
+scikit-learn
+numpy
+requests
+smtplib
+nacl
+matplotlib
+json
+datetime
+os
+sys
+time

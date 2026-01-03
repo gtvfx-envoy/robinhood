@@ -39,7 +39,7 @@ class OrderType(StrEnum):
 
 
 class TimeInForce(StrEnum):
-    DAY = auto() # only valid for the current trading day
-    GTC = auto() # remains active until filled or manually cancelled
-    IOC = auto() # fills as much as possible immediately, cancelling the rest
-    FOK = auto() # must be filled entirely immediately or the entire order is cancelled
+    GTC = auto() # The order remains open until it's filled or the user cancels it.
+    GFD = auto() # The order remains open until the end of the day or when the user cancels it.
+    GFW = auto() # The order remains open until the end of the week or when the user cancels it.
+    GFM = auto() # The order remains open until the end of the month or when the user cancels it.
