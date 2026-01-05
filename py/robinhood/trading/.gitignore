@@ -1,0 +1,75 @@
+# Encrypted key files - DO NOT COMMIT
+*.enc
+*.key
+robinhood_keys.enc
+robinhood_cipher.key
+coinbase_keys.enc
+coinbase_cipher.key
+
+# API keys and secrets
+*.json
+service/
+config/api_keys.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ML Models
+models/*.pkl
+models/*.h5
+models/*.joblib
+scalers/*.pkl
+
+# Trading data
+data/historical_prices.csv
+data/trade_history.json
+logs/*.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.bak
