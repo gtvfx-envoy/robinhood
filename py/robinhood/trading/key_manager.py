@@ -119,6 +119,12 @@ class KeyManager:
         Returns:
             Dictionary with 'api_key' and 'private_key'
         """
+        if not self.key_file.exists():
+            raise FileNotFoundError(
+                f"Credentials file not found at {self.key_file}\n"
+                "Run setup_keys.py to create and encrypt your credentials first."
+            )
+        
         fernet = Fernet(cipher_key)
         
         # Load encrypted data
@@ -126,7 +132,16 @@ class KeyManager:
             encrypted_data = f.read()
         
         # Decrypt and deserialize
-        decrypted_data = fernet.decrypt(encrypted_data)
+        try:
+            decrypted_data = fernet.decrypt(encrypted_data)
+        except Exception as e:
+            raise ValueError(
+                "Failed to decrypt credentials. This usually means:\n"
+                "  1. Wrong cipher key - use the key from when you set up\n"
+                "  2. Corrupted credentials file\n"
+                f"Original error: {e}"
+            ) from e
+        
         credentials = json.loads(decrypted_data.decode())
         
         return credentials
@@ -232,7 +247,17 @@ class KeyManager:
         
         # Decrypt
         fernet = Fernet(derived_key)
-        decrypted_data = fernet.decrypt(actual_encrypted_data)
+        try:
+            decrypted_data = fernet.decrypt(actual_encrypted_data)
+        except Exception as e:
+            raise ValueError(
+                "Failed to decrypt credentials. This usually means:\n"
+                "  1. Wrong password - use the password you set during setup\n"
+                "  2. Credentials not set up - run setup_keys.py first\n"
+                "  3. Corrupted credentials file\n"
+                f"Original error: {e}"
+            ) from e
+        
         credentials = json.loads(decrypted_data.decode())
         
         return {
