@@ -8,13 +8,13 @@ symbols, records decisions, and simulates fills. It does not place real orders.
 Set `SERVICE_ROOT` before running the bot:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
 ```
 
 Your personal config lives at:
 
 ```text
-R:\service\rh_agentic.json
+$env:SERVICE_ROOT\rh_agentic.json
 ```
 
 The current default polling interval is `60` seconds, controlled by:
@@ -29,7 +29,7 @@ The persistent session reads quote data from the file configured by
 `quote_source_path`, currently:
 
 ```text
-R:\service\rh_quotes.json
+$env:SERVICE_ROOT\rh_quotes.json
 ```
 
 That file should be maintained by quote-collection code. The user should not
@@ -58,7 +58,7 @@ From the Python repo root:
 
 ```powershell
 cd C:\repo\gtvfx\robinhood\py
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
 python -m robinhood.agentic.cli run
 ```
 
@@ -96,7 +96,7 @@ Press `Ctrl+C` in the terminal running the bot.
 Decision journal:
 
 ```text
-R:\service\rh_agentic_decisions.jsonl
+$env:SERVICE_ROOT\rh_agentic_decisions.jsonl
 ```
 
 Each line is one JSON decision record with quote, strategy decision, risk result,
