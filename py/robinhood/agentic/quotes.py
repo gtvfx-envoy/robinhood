@@ -10,6 +10,10 @@ from typing import Any
 from .strategy import QuoteSnapshot
 
 
+class QuoteUnavailable(Exception):
+    """Raised when a quote source cannot provide a symbol right now."""
+
+
 class QuoteProvider(ABC):
     """Interface for collecting quote snapshots from a data source."""
 
@@ -44,21 +48,32 @@ class JsonQuoteProvider(QuoteProvider):
     def __init__(self, path: Path | str):
         self.path = Path(path)
 
+        if not self.path.exists():
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text("{}", encoding="utf-8")
+
     def get_quote(self, symbol: str) -> QuoteSnapshot:
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise QuoteUnavailable(f"quote file is not valid JSON: {self.path}") from exc
+
         symbols = payload.get("symbols", payload)
         if not isinstance(symbols, dict):
-            raise ValueError("quote file must contain a symbol mapping")
+            raise QuoteUnavailable("quote file must contain a symbol mapping")
 
         quote = symbols.get(symbol.upper())
         if not isinstance(quote, dict):
-            raise KeyError(f"quote for {symbol.upper()} not found in {self.path}")
+            raise QuoteUnavailable(f"quote for {symbol.upper()} not found in {self.path}")
 
-        return QuoteSnapshot(
-            symbol=symbol.upper(),
-            price=float(_required(quote, "price")),
-            previous_close=_optional_float(quote.get("previous_close")),
-        )
+        try:
+            return QuoteSnapshot(
+                symbol=symbol.upper(),
+                price=float(_required(quote, "price")),
+                previous_close=_optional_float(quote.get("previous_close")),
+            )
+        except (TypeError, ValueError) as exc:
+            raise QuoteUnavailable(f"quote for {symbol.upper()} has invalid numeric data") from exc
 
 
 def _required(payload: dict[str, Any], key: str) -> Any:

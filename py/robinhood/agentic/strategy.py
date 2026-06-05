@@ -80,3 +80,26 @@ class SimpleMomentumStrategy:
             confidence=confidence,
             reason=f"price move {move_pct:.2f}% is inside thresholds",
         )
+
+
+class HoldStrategy:
+    """Always hold; useful for lanes that are configured before strategy support exists."""
+
+    def evaluate(self, quote: QuoteSnapshot) -> Decision:
+        return Decision(
+            symbol=quote.symbol,
+            action="HOLD",
+            confidence=0.0,
+            reason="lane strategy is hold",
+        )
+
+
+def build_strategy(name: str, target_dollars: float = 10.0):
+    """Create a strategy by config name."""
+
+    normalized = name.strip().lower()
+    if normalized == "simple_momentum":
+        return SimpleMomentumStrategy(target_dollars=target_dollars)
+    if normalized in {"hold", "none"}:
+        return HoldStrategy()
+    raise ValueError(f"unknown strategy: {name}")

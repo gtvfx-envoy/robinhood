@@ -1,7 +1,8 @@
 # Agentic Bot User Guide
 
-This bot is currently for persistent paper trading only. It analyzes configured
-symbols, records decisions, and simulates fills. It does not place real orders.
+This bot is currently for persistent paper trading only. In one running process
+it collects quotes, analyzes configured lanes, records decisions, and simulates
+fills. It does not place real orders.
 
 ## Setup
 
@@ -25,15 +26,46 @@ The current default polling interval is `60` seconds, controlled by:
 
 ## Quote Data
 
-The persistent session reads quote data from the file configured by
-`quote_source_path`, currently:
+The persistent session now attempts to collect fresh quotes itself. It writes
+the latest collected quotes to the file configured by `quote_source_path`,
+currently:
 
 ```text
 $env:SERVICE_ROOT\rh_quotes.json
 ```
 
-That file should be maintained by quote-collection code. The user should not
-normally type prices into the bot command.
+The quote file is also used as a cache/fallback. The user should not normally
+type prices into the bot command.
+
+If the quote file does not exist, the bot creates it as an empty JSON object.
+If quote collection fails and no cached quote exists for a symbol, the bot prints
+`SKIP` for that symbol and waits for the next polling cycle. A partial quote file
+is valid; symbols not present in the file are skipped without stopping the
+session.
+
+## Lanes
+
+Symbols are grouped into lanes in `config/symbols.cfg`. Each lane can have its
+own symbols, strategy, polling interval, and asset class.
+
+Example:
+
+```json
+{
+  "stocks": {
+    "symbols": ["AAPL", "MSFT"],
+    "strategy": "simple_momentum",
+    "poll_seconds": 60.0,
+    "asset_class": "equity"
+  },
+  "scalps": {
+    "symbols": ["NVDA"],
+    "strategy": "simple_momentum",
+    "poll_seconds": 15.0,
+    "asset_class": "equity"
+  }
+}
+```
 
 Expected format:
 
@@ -62,9 +94,28 @@ $env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
 python -m robinhood.agentic.cli run
 ```
 
-The bot will poll the quote file every `poll_seconds`, analyze each configured
-stock symbol, append decisions to `journal_path`, and print a concise status
-line for each decision.
+The bot will poll each lane on that lane's `poll_seconds`, collect quotes,
+analyze each configured symbol, append decisions to `journal_path`, and print a
+concise status line for each decision.
+
+While waiting between lane polls, the bot prints a countdown progress bar:
+
+```text
+[########----------------] next poll: stocks in  39.0s
+```
+
+To disable the countdown for logs or scheduled runs:
+
+```powershell
+python -m robinhood.agentic.cli run --quiet
+```
+
+If the quote collector is not running yet, the session stays alive and prints
+skip messages such as:
+
+```text
+MSFT: SKIP - quote for MSFT not found in R:\service\rh_quotes.json
+```
 
 To run one polling iteration for a smoke test:
 
@@ -76,6 +127,12 @@ To temporarily override polling cadence:
 
 ```powershell
 python -m robinhood.agentic.cli run --poll-seconds 15
+```
+
+To run without fresh quote collection and only read the existing quote cache:
+
+```powershell
+python -m robinhood.agentic.cli run --no-collect
 ```
 
 ## One-Shot Analysis

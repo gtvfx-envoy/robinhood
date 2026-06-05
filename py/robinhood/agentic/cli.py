@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .bot import AgenticBot
 from .config import get_personal_config_path, load_config
+from .market_data import QuoteCollector, YahooChartMarketDataSource
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
 from .session import PaperSession
 
@@ -26,6 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
     run.add_argument("--poll-seconds", type=float, help="Override configured polling interval.")
     run.add_argument("--max-iterations", type=int, help="Stop after N polling iterations.")
+    run.add_argument(
+        "--no-collect",
+        action="store_true",
+        help="Read existing quote cache only; do not fetch fresh quotes.",
+    )
+    run.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable countdown progress while waiting for the next poll.",
+    )
     _add_common_args(run)
     return parser
 
@@ -67,10 +78,18 @@ def main() -> int:
         quote_path = args.quote_file or config.quote_source_path
         if not quote_path:
             raise SystemExit("run requires --quote-file or quote_source_path in personal config")
+        collector = None
+        if not args.no_collect:
+            collector = QuoteCollector(
+                source=YahooChartMarketDataSource(),
+                cache_path=quote_path,
+            )
         session = PaperSession(
             config=config,
             quote_provider=JsonQuoteProvider(quote_path),
+            quote_collector=collector,
             bot=bot,
+            show_progress=not args.quiet,
         )
         session.run(max_iterations=args.max_iterations)
         return 0

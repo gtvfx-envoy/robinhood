@@ -4,11 +4,20 @@ This package contains the local agentic trading scaffold. It is intentionally
 dry-run and paper-trading first. Live order review and placement should be added
 behind explicit confirmation boundaries.
 
+## Architecture
+
+The long-running bot is a single process with four stages:
+
+1. Scheduler selects due lanes.
+2. Collector fetches quote snapshots and updates the quote cache.
+3. Decision stage dispatches lane symbols to the configured strategy.
+4. Executor applies the decision. The current executor is paper trading only.
+
 ## Configuration
 
 Tracked config:
 
-- `config/symbols.cfg`: allowed stock and crypto symbols.
+- `config/symbols.cfg`: lane definitions.
 
 Personal config:
 
@@ -38,13 +47,20 @@ Example personal config:
 
 ## Quote Providers
 
-`QuoteProvider` abstracts market data collection from strategy execution.
+`MarketDataSource` abstracts fresh quote collection. `QuoteProvider` abstracts
+reading quote snapshots from cache/fallback sources.
 
 Current providers:
 
+- `YahooChartMarketDataSource`: dependency-free HTTP quote source used by
+  default in `run`.
 - `ManualQuoteProvider`: one-shot tests and CLI smoke checks.
 - `JsonQuoteProvider`: persistent sessions read quotes from a JSON file produced
-  by a separate quote collector.
+  by the collector/cache writer.
+
+`JsonQuoteProvider` creates a missing quote file with `{}` so first-run startup
+does not fail. Missing symbols, invalid JSON, invalid shape, and invalid numeric
+fields are reported as `QuoteUnavailable`.
 
 Supported quote file shapes:
 
@@ -74,15 +90,19 @@ or:
 
 `PaperSession` runs the persistent loop:
 
-1. Load configured stock symbols.
-2. Poll `QuoteProvider` for each symbol.
-3. Run `AgenticBot.analyze()`.
-4. Append a JSONL decision journal entry.
-5. Apply approved decisions to `PaperAccount`.
-6. Sleep `poll_seconds`.
+1. Find lanes whose `poll_seconds` interval has elapsed.
+2. Collect quotes for each lane and write the JSON quote cache.
+3. Fall back to the cache when collection does not return a fresh quote.
+4. Skip symbols whose quote is currently unavailable.
+5. Run `AgenticBot.analyze()` with the lane's configured strategy.
+6. Append a JSONL decision journal entry.
+7. Apply approved decisions to `PaperAccount`.
+8. Sleep until the next lane is due.
 
-The default poll cadence is loaded from personal config. The current service
-config uses `60.0` seconds.
+Each lane controls its own polling cadence in `config/symbols.cfg`.
+The session prints lane poll summaries and a countdown progress bar by default.
+`show_progress=False` or CLI `--quiet` disables the countdown while preserving
+poll and decision lines.
 
 ## CLI
 
@@ -98,6 +118,18 @@ Persistent paper session:
 ```powershell
 $env:SERVICE_ROOT='R:\service'
 python -m robinhood.agentic.cli run
+```
+
+Cache-only run:
+
+```powershell
+python -m robinhood.agentic.cli run --no-collect
+```
+
+Disable countdown progress:
+
+```powershell
+python -m robinhood.agentic.cli run --quiet
 ```
 
 The `run` command requires either `quote_source_path` in personal config or a

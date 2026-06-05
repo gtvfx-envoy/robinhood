@@ -6,16 +6,19 @@ import unittest
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.config import (
     AgenticConfig,
+    LaneConfig,
     RiskConfig,
     SymbolConfig,
     get_personal_config_path,
+    load_lanes,
     load_config,
     load_personal_config,
     load_symbols,
 )
 from robinhood.agentic.journal import DecisionJournal
+from robinhood.agentic.market_data import QuoteCollector, StaticMarketDataSource
 from robinhood.agentic.paper import PaperAccount
-from robinhood.agentic.quotes import JsonQuoteProvider
+from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
 from robinhood.agentic.session import PaperSession
 from robinhood.agentic.strategy import Decision, QuoteSnapshot, SimpleMomentumStrategy
@@ -38,6 +41,37 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertEqual(symbols.stocks, ("AAPL", "MSFT"))
         self.assertEqual(symbols.crypto, ("BTC",))
+
+    def test_load_lanes_supports_object_config(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "symbols.cfg"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "stocks": {
+                            "symbols": ["aapl"],
+                            "strategy": "simple_momentum",
+                            "poll_seconds": 30,
+                            "asset_class": "equity",
+                        },
+                        "scalps": {
+                            "symbols": ["nvda"],
+                            "strategy": "simple_momentum",
+                            "poll_seconds": 5,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            lanes = load_lanes(config_path)
+
+        self.assertEqual(tuple(lane.name for lane in lanes), ("stocks", "scalps"))
+        self.assertEqual(lanes[0].symbols, ("AAPL",))
+        self.assertEqual(lanes[0].poll_seconds, 30.0)
+        self.assertEqual(lanes[1].symbols, ("NVDA",))
 
     def test_load_personal_config_supports_service_file_shape(self):
         import tempfile
@@ -179,6 +213,32 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(quote.price, 205.0)
         self.assertEqual(quote.previous_close, 200.0)
 
+    def test_json_quote_provider_creates_missing_file(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+
+            provider = JsonQuoteProvider(quote_path)
+
+            self.assertTrue(quote_path.exists())
+            self.assertEqual(quote_path.read_text(encoding="utf-8"), "{}")
+            with self.assertRaises(QuoteUnavailable):
+                provider.get_quote("AAPL")
+
+    def test_json_quote_provider_reports_missing_symbol(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            quote_path.write_text(
+                json.dumps({"symbols": {"AAPL": {"price": 205, "previous_close": 200}}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(QuoteUnavailable, "MSFT"):
+                JsonQuoteProvider(quote_path).get_quote("MSFT")
+
     def test_paper_session_runs_one_iteration(self):
         import tempfile
 
@@ -198,14 +258,130 @@ class AgenticBotTests(unittest.TestCase):
                 config=config,
                 quote_provider=JsonQuoteProvider(quote_path),
                 paper_account=PaperAccount(cash=100.0),
+                show_progress=False,
             )
 
             result = session.run(max_iterations=1)
 
         self.assertEqual(result.iterations, 1)
         self.assertEqual(result.decisions, 1)
+        self.assertEqual(result.skipped_quotes, 0)
+        self.assertEqual(result.collection_errors, 0)
         self.assertLess(result.paper_cash, 100.0)
         self.assertIn("AAPL", result.positions)
+
+    def test_paper_session_skips_missing_quote_symbol(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            quote_path.write_text(
+                json.dumps({"AAPL": {"price": 102, "previous_close": 100}}),
+                encoding="utf-8",
+            )
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL", "MSFT")),
+                paper_starting_cash=100.0,
+            )
+            session = PaperSession(config=config, quote_provider=JsonQuoteProvider(quote_path))
+
+            result = session.run(max_iterations=1)
+
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(result.decisions, 1)
+        self.assertEqual(result.skipped_quotes, 1)
+
+    def test_quote_collector_writes_cache(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "quotes.json"
+            collector = QuoteCollector(
+                source=StaticMarketDataSource(
+                    {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
+                ),
+                cache_path=cache_path,
+            )
+
+            quotes, errors = collector.collect(["AAPL"])
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(errors, {})
+        self.assertIn("AAPL", quotes)
+        self.assertEqual(payload["symbols"]["AAPL"]["price"], 102)
+
+    def test_paper_session_collects_quotes_before_decision(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL",)),
+                lanes=(LaneConfig("stocks", symbols=("AAPL",), poll_seconds=60),),
+                paper_starting_cash=100.0,
+            )
+            session = PaperSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(cache_path),
+                quote_collector=QuoteCollector(
+                    source=StaticMarketDataSource(
+                        {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
+                    ),
+                    cache_path=cache_path,
+                ),
+                show_progress=False,
+            )
+
+            result = session.run(max_iterations=1)
+
+        self.assertEqual(result.decisions, 1)
+        self.assertEqual(result.collection_errors, 0)
+        self.assertLess(result.paper_cash, 100.0)
+
+    def test_paper_session_counts_collection_errors_once(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL",)),
+                lanes=(LaneConfig("stocks", symbols=("AAPL",), poll_seconds=60),),
+            )
+            session = PaperSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(cache_path),
+                quote_collector=QuoteCollector(
+                    source=StaticMarketDataSource({}),
+                    cache_path=cache_path,
+                ),
+                show_progress=False,
+            )
+
+            result = session.run(max_iterations=1)
+
+        self.assertEqual(result.decisions, 0)
+        self.assertEqual(result.collection_errors, 1)
+        self.assertEqual(result.skipped_quotes, 0)
+
+    def test_session_reports_next_due_lane_names(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = AgenticConfig()
+            session = PaperSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(Path(tmp_dir) / "unused_quotes.json"),
+                show_progress=False,
+            )
+            session._lane_next_run = {"stocks": 10.0, "scalps": 5.0, "crypto": 5.0}
+
+            self.assertEqual(session._next_due_lane_names(), ("scalps", "crypto"))
 
 
 if __name__ == "__main__":

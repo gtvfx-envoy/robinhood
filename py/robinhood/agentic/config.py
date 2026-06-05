@@ -22,6 +22,17 @@ class SymbolConfig:
 
 
 @dataclass(frozen=True)
+class LaneConfig:
+    """A configurable analysis lane with its own symbols and cadence."""
+
+    name: str
+    symbols: tuple[str, ...] = ()
+    strategy: str = "simple_momentum"
+    poll_seconds: float = 60.0
+    asset_class: str = "equity"
+
+
+@dataclass(frozen=True)
 class RiskConfig:
     """Hard limits enforced before any order can be reviewed or placed."""
 
@@ -54,6 +65,7 @@ class AgenticConfig:
     poll_seconds: float = 60.0
     paper_starting_cash: float = 10000.0
     symbols: SymbolConfig = field(default_factory=SymbolConfig)
+    lanes: tuple[LaneConfig, ...] = ()
     risk: RiskConfig = field(default_factory=RiskConfig)
 
 
@@ -62,9 +74,24 @@ def load_symbols(path: Path | str = DEFAULT_SYMBOLS_PATH) -> SymbolConfig:
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return SymbolConfig(
-        stocks=tuple(_normalize_symbols(payload.get("stocks", []))),
-        crypto=tuple(_normalize_symbols(payload.get("crypto", []))),
+        stocks=tuple(_normalize_symbols(_lane_symbols(payload.get("stocks", [])))),
+        crypto=tuple(_normalize_symbols(_lane_symbols(payload.get("crypto", [])))),
     )
+
+
+def load_lanes(path: Path | str = DEFAULT_SYMBOLS_PATH) -> tuple[LaneConfig, ...]:
+    """Load configured analysis lanes from repo config."""
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("lane config root must be an object")
+
+    lanes: list[LaneConfig] = []
+    for name, raw_lane in payload.items():
+        lane = _load_lane(name, raw_lane)
+        if lane.symbols:
+            lanes.append(lane)
+    return tuple(lanes)
 
 
 def load_config(
@@ -74,6 +101,7 @@ def load_config(
     """Load tracked defaults and personal settings from outside the repo."""
 
     symbols = load_symbols(path)
+    lanes = load_lanes(path)
     personal_path = personal_path or get_personal_config_path()
     personal = load_personal_config(personal_path)
     risk = load_risk_config(personal_path)
@@ -85,6 +113,7 @@ def load_config(
         poll_seconds=personal.poll_seconds,
         paper_starting_cash=personal.paper_starting_cash,
         symbols=symbols,
+        lanes=lanes,
         risk=risk,
     )
 
@@ -157,3 +186,25 @@ def _normalize_symbols(values: Any) -> list[str]:
         if symbol:
             symbols.append(symbol)
     return symbols
+
+
+def _lane_symbols(raw_lane: Any) -> Any:
+    if isinstance(raw_lane, dict):
+        return raw_lane.get("symbols", [])
+    return raw_lane
+
+
+def _load_lane(name: str, raw_lane: Any) -> LaneConfig:
+    if isinstance(raw_lane, list):
+        return LaneConfig(name=name, symbols=tuple(_normalize_symbols(raw_lane)))
+
+    if not isinstance(raw_lane, dict):
+        raise ValueError(f"lane {name} must be a list or object")
+
+    return LaneConfig(
+        name=name,
+        symbols=tuple(_normalize_symbols(raw_lane.get("symbols", []))),
+        strategy=str(raw_lane.get("strategy", "simple_momentum")),
+        poll_seconds=float(raw_lane.get("poll_seconds", 60.0)),
+        asset_class=str(raw_lane.get("asset_class", name)),
+    )
