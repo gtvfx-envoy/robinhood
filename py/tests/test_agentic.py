@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.config import (
@@ -21,7 +22,7 @@ from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
 from robinhood.agentic.session import PaperSession
-from robinhood.agentic.strategy import Decision, QuoteSnapshot, SimpleMomentumStrategy
+from robinhood.agentic.strategy import CryptoScalpStrategy, Decision, QuoteSnapshot, SimpleMomentumStrategy
 
 
 class AgenticBotTests(unittest.TestCase):
@@ -157,6 +158,50 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(decision.action, "HOLD")
         self.assertIn("missing previous close", decision.reason)
 
+    def test_crypto_scalp_warms_up_before_trading(self):
+        strategy = CryptoScalpStrategy()
+
+        decision = strategy.evaluate(QuoteSnapshot("BTC", price=100.0))
+
+        self.assertEqual(decision.action, "HOLD")
+        self.assertIn("warming up", decision.reason)
+
+    def test_crypto_scalp_buys_on_short_term_edge(self):
+        strategy = CryptoScalpStrategy(
+            fast_period=2,
+            slow_period=4,
+            rsi_period=3,
+            min_edge_pct=0.05,
+            buy_rsi_max=100.0,
+            target_dollars=10.0,
+        )
+        prices = [100.0, 99.8, 100.1, 100.4, 100.8]
+
+        decision = None
+        for price in prices:
+            decision = strategy.evaluate(QuoteSnapshot("BTC", price=price))
+
+        self.assertEqual(decision.action, "BUY")
+        self.assertEqual(decision.target_dollars, 10.0)
+
+    def test_crypto_scalp_sells_on_take_profit(self):
+        strategy = CryptoScalpStrategy(
+            fast_period=2,
+            slow_period=4,
+            rsi_period=3,
+            min_edge_pct=0.05,
+            buy_rsi_max=100.0,
+            take_profit_pct=0.2,
+            target_dollars=10.0,
+        )
+        for price in [100.0, 99.8, 100.1, 100.4, 100.8]:
+            strategy.evaluate(QuoteSnapshot("BTC", price=price))
+
+        decision = strategy.evaluate(QuoteSnapshot("BTC", price=101.1))
+
+        self.assertEqual(decision.action, "SELL")
+        self.assertIn("take profit", decision.reason)
+
     def test_risk_rejects_unlisted_symbol(self):
         config = AgenticConfig(symbols=SymbolConfig(stocks=("AAPL",)))
         manager = RiskManager(config)
@@ -165,6 +210,14 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertFalse(result.approved)
         self.assertIn("not in allowed", result.reason)
+
+    def test_risk_allows_configured_crypto_symbol(self):
+        config = AgenticConfig(symbols=SymbolConfig(crypto=("BTC",)))
+        manager = RiskManager(config)
+
+        result = manager.evaluate(Decision("BTC", "BUY", 1.0, "test", target_dollars=5.0))
+
+        self.assertTrue(result.approved)
 
     def test_risk_rejects_trade_size_above_limit(self):
         config = AgenticConfig(
@@ -382,6 +435,36 @@ class AgenticBotTests(unittest.TestCase):
             session._lane_next_run = {"stocks": 10.0, "scalps": 5.0, "crypto": 5.0}
 
             self.assertEqual(session._next_due_lane_names(), ("scalps", "crypto"))
+
+    def test_paper_session_handles_keyboard_interrupt(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL",)),
+                lanes=(LaneConfig("stocks", symbols=("AAPL",), poll_seconds=60),),
+            )
+            session = PaperSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(cache_path),
+                quote_collector=QuoteCollector(
+                    source=StaticMarketDataSource(
+                        {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
+                    ),
+                    cache_path=cache_path,
+                ),
+                show_progress=False,
+            )
+
+            with patch.object(session, "_sleep_until_next_poll", side_effect=KeyboardInterrupt):
+                result = session.run()
+
+        self.assertTrue(result.interrupted)
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(result.decisions, 1)
 
 
 if __name__ == "__main__":

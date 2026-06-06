@@ -62,6 +62,21 @@ Current providers:
 does not fail. Missing symbols, invalid JSON, invalid shape, and invalid numeric
 fields are reported as `QuoteUnavailable`.
 
+## Strategies
+
+Current strategies:
+
+- `simple_momentum`: compares current price with previous close.
+- `crypto_scalp`: stateful paper scalping strategy for crypto lanes. It keeps
+  rolling in-memory price history, enters when fast EMA is above slow EMA with
+  RSI inside a controlled momentum band, then exits on take-profit, stop-loss,
+  or trailing stop.
+- `hold`: always returns `HOLD`.
+
+The crypto scalp defaults are intentionally conservative and should be
+backtested before any live execution path exists. The current default crypto
+lane polls every `15` seconds.
+
 Supported quote file shapes:
 
 ```json
@@ -103,6 +118,8 @@ Each lane controls its own polling cadence in `config/symbols.cfg`.
 The session prints lane poll summaries and a countdown progress bar by default.
 `show_progress=False` or CLI `--quiet` disables the countdown while preserving
 poll and decision lines.
+`KeyboardInterrupt` is caught inside `PaperSession.run()` so Ctrl+C returns a
+`SessionResult` with `interrupted=True` instead of raising a traceback.
 
 ## CLI
 

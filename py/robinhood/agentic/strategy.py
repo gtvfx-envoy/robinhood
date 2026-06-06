@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -94,12 +95,165 @@ class HoldStrategy:
         )
 
 
+class CryptoScalpStrategy:
+    """Stateful crypto scalping strategy for paper trading.
+
+    This strategy needs several polling ticks before it can act. It buys only
+    when short-term momentum has enough estimated edge to clear friction, then
+    exits on take-profit, stop-loss, or trailing stop.
+    """
+
+    def __init__(
+        self,
+        target_dollars: float = 10.0,
+        fast_period: int = 3,
+        slow_period: int = 8,
+        rsi_period: int = 7,
+        min_edge_pct: float = 0.18,
+        take_profit_pct: float = 0.45,
+        stop_loss_pct: float = -0.35,
+        trailing_stop_pct: float = 0.25,
+        buy_rsi_min: float = 45.0,
+        buy_rsi_max: float = 72.0,
+    ):
+        self.target_dollars = target_dollars
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.rsi_period = rsi_period
+        self.min_edge_pct = min_edge_pct
+        self.take_profit_pct = take_profit_pct
+        self.stop_loss_pct = stop_loss_pct
+        self.trailing_stop_pct = trailing_stop_pct
+        self.buy_rsi_min = buy_rsi_min
+        self.buy_rsi_max = buy_rsi_max
+        self.history = defaultdict(lambda: deque(maxlen=max(slow_period, rsi_period) + 2))
+        self.entry_price: dict[str, float] = {}
+        self.peak_price: dict[str, float] = {}
+
+    def evaluate(self, quote: QuoteSnapshot) -> Decision:
+        symbol = quote.symbol.upper()
+        prices = self.history[symbol]
+        prices.append(quote.price)
+
+        if symbol in self.entry_price:
+            return self._evaluate_exit(symbol, quote.price)
+
+        required = max(self.slow_period, self.rsi_period) + 1
+        if len(prices) < required:
+            return Decision(
+                symbol=symbol,
+                action="HOLD",
+                confidence=0.0,
+                reason=f"warming up crypto scalp history {len(prices)}/{required}",
+            )
+
+        fast = _ema(list(prices)[-self.fast_period:])
+        slow = _ema(list(prices)[-self.slow_period:])
+        rsi = _rsi(list(prices), self.rsi_period)
+        previous = list(prices)[-2]
+        tick_move_pct = ((quote.price - previous) / previous) * 100.0 if previous > 0 else 0.0
+        edge_pct = ((fast - slow) / slow) * 100.0 if slow > 0 else 0.0
+
+        if edge_pct >= self.min_edge_pct and tick_move_pct > 0 and self.buy_rsi_min <= rsi <= self.buy_rsi_max:
+            self.entry_price[symbol] = quote.price
+            self.peak_price[symbol] = quote.price
+            confidence = min(edge_pct / max(self.min_edge_pct * 2, 0.01), 1.0)
+            return Decision(
+                symbol=symbol,
+                action="BUY",
+                confidence=confidence,
+                reason=f"crypto scalp entry edge={edge_pct:.2f}% rsi={rsi:.1f} tick={tick_move_pct:.2f}%",
+                target_dollars=self.target_dollars,
+            )
+
+        return Decision(
+            symbol=symbol,
+            action="HOLD",
+            confidence=0.0,
+            reason=f"no scalp entry edge={edge_pct:.2f}% rsi={rsi:.1f} tick={tick_move_pct:.2f}%",
+        )
+
+    def _evaluate_exit(self, symbol: str, price: float) -> Decision:
+        entry = self.entry_price[symbol]
+        peak = max(self.peak_price.get(symbol, price), price)
+        self.peak_price[symbol] = peak
+        pnl_pct = ((price - entry) / entry) * 100.0
+        drawdown_pct = ((price - peak) / peak) * 100.0 if peak > 0 else 0.0
+
+        should_sell = False
+        reason = ""
+        if pnl_pct >= self.take_profit_pct:
+            should_sell = True
+            reason = f"crypto scalp take profit pnl={pnl_pct:.2f}%"
+        elif pnl_pct <= self.stop_loss_pct:
+            should_sell = True
+            reason = f"crypto scalp stop loss pnl={pnl_pct:.2f}%"
+        elif drawdown_pct <= -self.trailing_stop_pct and pnl_pct > self.min_edge_pct:
+            should_sell = True
+            reason = f"crypto scalp trailing stop pnl={pnl_pct:.2f}% drawdown={drawdown_pct:.2f}%"
+
+        if should_sell:
+            self.entry_price.pop(symbol, None)
+            self.peak_price.pop(symbol, None)
+            return Decision(
+                symbol=symbol,
+                action="SELL",
+                confidence=1.0,
+                reason=reason,
+            )
+
+        return Decision(
+            symbol=symbol,
+            action="HOLD",
+            confidence=0.0,
+            reason=f"holding scalp pnl={pnl_pct:.2f}% drawdown={drawdown_pct:.2f}%",
+        )
+
+
 def build_strategy(name: str, target_dollars: float = 10.0):
     """Create a strategy by config name."""
 
     normalized = name.strip().lower()
     if normalized == "simple_momentum":
         return SimpleMomentumStrategy(target_dollars=target_dollars)
+    if normalized == "crypto_scalp":
+        return CryptoScalpStrategy(target_dollars=target_dollars)
     if normalized in {"hold", "none"}:
         return HoldStrategy()
     raise ValueError(f"unknown strategy: {name}")
+
+
+def _ema(values: list[float]) -> float:
+    if not values:
+        return 0.0
+
+    alpha = 2.0 / (len(values) + 1.0)
+    current = values[0]
+    for value in values[1:]:
+        current = (value * alpha) + (current * (1.0 - alpha))
+    return current
+
+
+def _rsi(values: list[float], period: int) -> float:
+    if len(values) < period + 1:
+        return 50.0
+
+    window = values[-(period + 1):]
+    gains = []
+    losses = []
+    for previous, current in zip(window, window[1:]):
+        delta = current - previous
+        if delta >= 0:
+            gains.append(delta)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(delta))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+
+    relative_strength = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + relative_strength))

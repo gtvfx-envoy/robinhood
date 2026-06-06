@@ -22,11 +22,11 @@ class PaperAccount:
             return "no paper fill"
 
         symbol = decision["symbol"]
-        dollars = float(decision.get("target_dollars") or 0)
-        if dollars <= 0:
-            return "no paper fill"
 
         if decision["action"] == "BUY":
+            dollars = float(decision.get("target_dollars") or 0)
+            if dollars <= 0:
+                return "no paper fill"
             dollars = min(dollars, self.cash)
             if dollars <= 0:
                 return "insufficient paper cash"

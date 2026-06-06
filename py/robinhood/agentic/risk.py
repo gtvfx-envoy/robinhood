@@ -24,19 +24,20 @@ class RiskManager:
         if not decision.is_trade:
             return RiskResult(True, "no trade requested")
 
-        if decision.symbol not in self.config.symbols.stocks:
-            return RiskResult(False, f"{decision.symbol} is not in allowed stock symbols")
+        allowed_symbols = set(self.config.symbols.stocks) | set(self.config.symbols.crypto)
+        if decision.symbol not in allowed_symbols:
+            return RiskResult(False, f"{decision.symbol} is not in allowed symbols")
 
-        if decision.action == "SELL" and not self.config.risk.allow_shorts:
-            return RiskResult(False, "sell decisions require position-aware checks")
+        if daily_trade_count >= self.config.risk.max_daily_trades:
+            return RiskResult(False, "daily trade limit reached")
+
+        if decision.action == "SELL":
+            return RiskResult(True, "approved for paper sell review")
 
         if decision.target_dollars <= 0:
             return RiskResult(False, "target dollars must be positive")
 
         if decision.target_dollars > self.config.risk.max_trade_dollars:
             return RiskResult(False, "target dollars exceeds max trade size")
-
-        if daily_trade_count >= self.config.risk.max_daily_trades:
-            return RiskResult(False, "daily trade limit reached")
 
         return RiskResult(True, "approved for dry-run review")

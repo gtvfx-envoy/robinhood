@@ -91,7 +91,20 @@ def main() -> int:
             bot=bot,
             show_progress=not args.quiet,
         )
-        session.run(max_iterations=args.max_iterations)
+        result = session.run(max_iterations=args.max_iterations)
+        print(
+            "[summary] "
+            f"iterations={result.iterations} decisions={result.decisions} "
+            f"skipped_quotes={result.skipped_quotes} collection_errors={result.collection_errors} "
+            f"paper_cash=${result.paper_cash:.2f} interrupted={result.interrupted}"
+        )
+        if result.positions:
+            open_positions = {
+                symbol: quantity
+                for symbol, quantity in result.positions.items()
+                if quantity > 0
+            }
+            print(f"[summary] paper_positions={open_positions}")
         return 0
 
     quote = ManualQuoteProvider(args.price, args.previous_close).get_quote(args.symbol.strip().upper())

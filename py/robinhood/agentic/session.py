@@ -20,6 +20,7 @@ class SessionResult:
     collection_errors: int
     paper_cash: float
     positions: dict[str, float]
+    interrupted: bool = False
 
 
 class PaperSession:
@@ -47,46 +48,51 @@ class PaperSession:
         decisions = 0
         skipped_quotes = 0
         collection_errors = 0
+        interrupted = False
 
-        while max_iterations is None or iterations < max_iterations:
-            iterations += 1
-            for lane in self._due_lanes():
-                print(
-                    f"[poll] lane={lane.name} symbols={len(lane.symbols)} "
-                    f"strategy={lane.strategy} interval={lane.poll_seconds:.0f}s"
-                )
-                quotes, errors = self._collect_lane_quotes(lane)
-                collection_errors += len(errors)
-                print(
-                    f"[poll] lane={lane.name} collected={len(quotes)} "
-                    f"errors={len(errors)}"
-                )
-                for symbol, error in errors.items():
-                    print(f"{lane.name}/{symbol}: SKIP - {error}")
+        try:
+            while max_iterations is None or iterations < max_iterations:
+                iterations += 1
+                for lane in self._due_lanes():
+                    print(
+                        f"[poll] lane={lane.name} symbols={len(lane.symbols)} "
+                        f"strategy={lane.strategy} interval={lane.poll_seconds:.0f}s"
+                    )
+                    quotes, errors = self._collect_lane_quotes(lane)
+                    collection_errors += len(errors)
+                    print(
+                        f"[poll] lane={lane.name} collected={len(quotes)} "
+                        f"errors={len(errors)}"
+                    )
+                    for symbol, error in errors.items():
+                        print(f"{lane.name}/{symbol}: SKIP - {error}")
 
-                for symbol in lane.symbols:
-                    normalized = symbol.upper()
-                    quote = quotes.get(normalized)
-                    if quote is None:
-                        try:
-                            quote = self.quote_provider.get_quote(symbol)
-                        except QuoteUnavailable as exc:
-                            if normalized not in errors:
-                                skipped_quotes += 1
-                                print(f"{lane.name}/{symbol}: SKIP - {exc}")
-                            continue
+                    for symbol in lane.symbols:
+                        normalized = symbol.upper()
+                        quote = quotes.get(normalized)
+                        if quote is None:
+                            try:
+                                quote = self.quote_provider.get_quote(symbol)
+                            except QuoteUnavailable as exc:
+                                if normalized not in errors:
+                                    skipped_quotes += 1
+                                    print(f"{lane.name}/{symbol}: SKIP - {exc}")
+                                continue
 
-                    entry = self.bot.analyze(quote, strategy_name=lane.strategy)
-                    decisions += 1
-                    fill = self.paper_account.apply(entry, quote)
-                    decision = entry.decision
-                    print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {fill}")
+                        entry = self.bot.analyze(quote, strategy_name=lane.strategy)
+                        decisions += 1
+                        fill = self.paper_account.apply(entry, quote)
+                        decision = entry.decision
+                        print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {fill}")
 
-                self._mark_lane_complete(lane)
+                    self._mark_lane_complete(lane)
 
-            if max_iterations is not None and iterations >= max_iterations:
-                break
-            self._sleep_until_next_poll()
+                if max_iterations is not None and iterations >= max_iterations:
+                    break
+                self._sleep_until_next_poll()
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\n[stop] keyboard interrupt received; stopping paper session")
 
         return SessionResult(
             iterations=iterations,
@@ -95,6 +101,7 @@ class PaperSession:
             collection_errors=collection_errors,
             paper_cash=self.paper_account.cash,
             positions=dict(self.paper_account.positions),
+            interrupted=interrupted,
         )
 
     def _due_lanes(self) -> tuple[LaneConfig, ...]:

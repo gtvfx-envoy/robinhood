@@ -63,9 +63,26 @@ Example:
     "strategy": "simple_momentum",
     "poll_seconds": 15.0,
     "asset_class": "equity"
+  },
+  "crypto": {
+    "symbols": ["BTC", "ETH", "SOL"],
+    "strategy": "crypto_scalp",
+    "poll_seconds": 15.0,
+    "asset_class": "crypto"
   }
 }
 ```
+
+The initial crypto lane uses `crypto_scalp`. It is a paper-trading strategy that
+waits for short-term price history, then looks for fast EMA above slow EMA, RSI
+in a controlled momentum range, and enough estimated edge to clear small
+execution costs. Exits use take-profit, stop-loss, and trailing stop checks.
+
+The default crypto polling interval is `15` seconds. That is a practical
+starting point for paper scalping with free HTTP quote data: fast enough to catch
+small moves, but slow enough to avoid excessive requests and noisy one-tick
+signals. Shorter intervals should wait until the quote source, rate limits, and
+execution costs are better modeled.
 
 Expected format:
 
@@ -147,6 +164,14 @@ python -m robinhood.agentic.cli analyze --symbol AAPL --price 205 --previous-clo
 ## Stop The Session
 
 Press `Ctrl+C` in the terminal running the bot.
+
+The bot handles the interrupt cleanly, stops the polling loop, and prints a
+summary:
+
+```text
+[stop] keyboard interrupt received; stopping paper session
+[summary] iterations=4 decisions=32 skipped_quotes=0 collection_errors=0 paper_cash=$9990.00 interrupted=True
+```
 
 ## Output Files
 

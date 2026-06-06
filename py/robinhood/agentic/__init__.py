@@ -19,11 +19,12 @@ from .market_data import (
 )
 from .quotes import JsonQuoteProvider, ManualQuoteProvider, QuoteProvider, QuoteUnavailable
 from .session import PaperSession
-from .strategy import Decision, QuoteSnapshot, SimpleMomentumStrategy
+from .strategy import CryptoScalpStrategy, Decision, QuoteSnapshot, SimpleMomentumStrategy
 
 __all__ = [
     "AgenticBot",
     "AgenticConfig",
+    "CryptoScalpStrategy",
     "Decision",
     "PersonalConfig",
     "JsonQuoteProvider",
