@@ -11,7 +11,8 @@ The long-running bot is a single process with four stages:
 1. Scheduler selects due lanes.
 2. Collector fetches quote snapshots and updates the quote cache.
 3. Decision stage dispatches lane symbols to the configured strategy.
-4. Executor applies the decision. The current executor is paper trading only.
+4. Executor applies the decision through either the paper account or a configured
+   broker-backed review/placement session.
 
 ## Configuration
 
@@ -53,9 +54,10 @@ Example personal config:
 }
 ```
 
-For future live trading through the Robinhood Agentic MCP broker, both
-`live_trading_enabled` and `auto_place_orders` must be set to `true`. Leaving
-either one false keeps the MCP broker in review-only mode.
+For future live trading through the Robinhood Agentic MCP broker, `broker` must
+be `agentic_mcp`, `dry_run` must be `false`, and both `live_trading_enabled` and
+`auto_place_orders` must be set to `true`. Leaving any gate disabled keeps the
+MCP broker in review-only mode.
 
 Standalone MCP access requires the optional MCP SDK:
 
@@ -124,10 +126,10 @@ The tracked default lane is ETF-first: `SPY`, `QQQ`, `IWM`, `TLT`, and `GLD`
 using `daily_trend_follow`. Crypto is disabled in tracked config for the first
 small-account live path.
 
-`daily_trend_follow` is designed for backtests and future candle-aware paper/live
-execution. The existing persistent `run` loop still operates on quote snapshots;
-do not use it as the live execution path for daily trend following until the
-broker/candle session layer is added.
+`daily_trend_follow` is designed for backtests and future candle-aware
+execution. The persistent `run` loop still operates on quote snapshots; do not
+use it as the live execution path for daily trend following until the
+candle-aware broker session layer is added.
 
 Supported quote file shapes:
 
@@ -155,7 +157,7 @@ or:
 
 ## Session Loop
 
-`PaperSession` runs the persistent loop:
+`PaperSession` and `BrokerSession` run the persistent loop:
 
 1. Find lanes whose `poll_seconds` interval has elapsed.
 2. Collect quotes for each lane and write the JSON quote cache.
@@ -163,7 +165,8 @@ or:
 4. Skip symbols whose quote is currently unavailable.
 5. Run `AgenticBot.analyze()` with the lane's configured strategy.
 6. Append a JSONL decision journal entry.
-7. Apply approved decisions to `PaperAccount`.
+7. Apply approved decisions to `PaperAccount`, or route broker intents through
+   MCP review/placement when `broker` is `agentic_mcp`.
 8. Sleep until the next lane is due.
 
 Each lane controls its own polling cadence in `config/symbols.cfg`.

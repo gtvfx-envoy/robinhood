@@ -45,7 +45,7 @@ from .mcp_client import (
     decode_mcp_tool_result,
 )
 from .quotes import JsonQuoteProvider, ManualQuoteProvider, QuoteProvider, QuoteUnavailable
-from .session import PaperSession
+from .session import BrokerSession, PaperSession
 from .strategy import (
     CryptoScalpStrategy,
     DailyTrendFollowStrategy,
@@ -61,6 +61,7 @@ __all__ = [
     "BacktestResult",
     "BacktestTrade",
     "Broker",
+    "BrokerSession",
     "Candle",
     "CandleCollector",
     "CryptoScalpStrategy",

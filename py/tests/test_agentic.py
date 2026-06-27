@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
-from robinhood.agentic.broker import OrderIntent, PaperBroker
+from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, PaperBroker
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.config import (
     AgenticConfig,
@@ -36,7 +36,7 @@ from robinhood.agentic.mcp_client import (
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
-from robinhood.agentic.session import PaperSession
+from robinhood.agentic.session import BrokerSession, PaperSession
 from robinhood.agentic.strategy import (
     CryptoScalpStrategy,
     DailyTrendFollowStrategy,
@@ -759,6 +759,40 @@ class AgenticBotTests(unittest.TestCase):
         self.assertLess(result.paper_cash, 100.0)
         self.assertIn("AAPL", result.positions)
 
+    def test_broker_session_reviews_approved_trade(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            quote_path.write_text(
+                json.dumps({"AAPL": {"price": 102, "previous_close": 100}}),
+                encoding="utf-8",
+            )
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=True,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL",)),
+                paper_starting_cash=100.0,
+            )
+            broker = _FakeReviewBroker(cash=100.0)
+            session = BrokerSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(quote_path),
+                broker=broker,
+                show_progress=False,
+            )
+
+            result = session.run(max_iterations=1)
+
+        self.assertEqual(result.decisions, 1)
+        self.assertEqual(result.paper_cash, 100.0)
+        self.assertEqual(len(broker.orders), 1)
+        self.assertEqual(broker.orders[0].symbol, "AAPL")
+        self.assertEqual(broker.orders[0].side, "buy")
+        self.assertEqual(broker.orders[0].dollar_amount, 10.0)
+
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile
 
@@ -1105,6 +1139,27 @@ class _FakeMcpClient:
         self.calls.append(name)
         self.call_arguments[name] = arguments
         return self.responses.get(name, {})
+
+
+class _FakeReviewBroker:
+    def __init__(self, cash=100.0):
+        self.cash = cash
+        self.orders = []
+
+    def get_account_snapshot(self):
+        return AccountSnapshot(cash=self.cash, positions={})
+
+    def review_order(self, intent, price):
+        raise AssertionError("BrokerSession should call place_order for approved intents")
+
+    def place_order(self, intent, price):
+        self.orders.append(intent)
+        return OrderResult(
+            intent=intent,
+            placed=False,
+            status="reviewed",
+            reason="live order placement disabled",
+        )
 
 
 if __name__ == "__main__":

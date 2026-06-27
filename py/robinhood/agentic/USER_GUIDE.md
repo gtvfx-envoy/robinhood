@@ -89,8 +89,9 @@ For a $100 cash account, use conservative risk settings in
 ```
 
 For future unattended live trading through the Robinhood Agentic MCP account,
-`broker` will be `agentic_mcp`, and both `live_trading_enabled` and
-`auto_place_orders` must be `true`. Keep either flag false for review-only mode.
+`broker` must be `agentic_mcp`, `dry_run` must be `false`, and both
+`live_trading_enabled` and `auto_place_orders` must be `true`. Keep any gate
+disabled for review-only mode.
 Standalone MCP access also requires the optional MCP SDK:
 
 ```powershell
@@ -203,9 +204,11 @@ To run without fresh quote collection and only read the existing quote cache:
 python -m robinhood.agentic.cli run --no-collect
 ```
 
-The persistent `run` loop still uses quote snapshots. The daily trend strategy
-requires historical daily candles, so use `backtest` for this strategy until the
-candle-aware broker session is added.
+The persistent `run` loop still uses quote snapshots. When `broker` is
+`agentic_mcp`, approved trade decisions are converted into broker intents and
+sent through MCP review-only mode unless all live-placement gates are enabled.
+The daily trend strategy requires historical daily candles, so use `backtest`
+for this strategy until the candle-aware broker session is added.
 
 ## Backtest The ETF Strategy
 

@@ -15,7 +15,7 @@ from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyC
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
-from .session import PaperSession
+from .session import BrokerSession, PaperSession
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,19 +112,41 @@ def main() -> int:
                 source=YahooChartMarketDataSource(),
                 cache_path=quote_path,
             )
-        session = PaperSession(
-            config=config,
-            quote_provider=JsonQuoteProvider(quote_path),
-            quote_collector=collector,
-            bot=bot,
-            show_progress=not args.quiet,
-        )
+        quote_provider = JsonQuoteProvider(quote_path)
+        broker_name = config.broker.strip().lower()
+        if broker_name == "agentic_mcp":
+            if not config.account_number:
+                raise SystemExit("run with agentic_mcp broker requires account_number in personal config")
+            broker = AgenticMcpEquityBroker(
+                account_number=config.account_number,
+                client=_build_mcp_client(config),
+                live_trading_enabled=config.live_trading_enabled and not config.dry_run,
+                auto_place_orders=config.auto_place_orders,
+            )
+            session = BrokerSession(
+                config=config,
+                quote_provider=quote_provider,
+                quote_collector=collector,
+                bot=bot,
+                broker=broker,
+                show_progress=not args.quiet,
+            )
+            summary_cash_label = "account_cash"
+        else:
+            session = PaperSession(
+                config=config,
+                quote_provider=quote_provider,
+                quote_collector=collector,
+                bot=bot,
+                show_progress=not args.quiet,
+            )
+            summary_cash_label = "paper_cash"
         result = session.run(max_iterations=args.max_iterations)
         print(
             "[summary] "
             f"iterations={result.iterations} decisions={result.decisions} "
             f"skipped_quotes={result.skipped_quotes} collection_errors={result.collection_errors} "
-            f"paper_cash=${result.paper_cash:.2f} interrupted={result.interrupted}"
+            f"{summary_cash_label}=${result.paper_cash:.2f} interrupted={result.interrupted}"
         )
         if result.positions:
             open_positions = {
