@@ -37,6 +37,9 @@ class RiskManager:
         if decision.target_dollars <= 0:
             return RiskResult(False, "target dollars must be positive")
 
+        if decision.target_dollars < self.config.risk.min_order_dollars:
+            return RiskResult(False, "target dollars below minimum order size")
+
         if decision.target_dollars > self.config.risk.max_trade_dollars:
             return RiskResult(False, "target dollars exceeds max trade size")
 

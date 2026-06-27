@@ -1,8 +1,7 @@
 # Agentic Bot User Guide
 
-This bot is currently for persistent paper trading only. In one running process
-it collects quotes, analyzes configured lanes, records decisions, and simulates
-fills. It does not place real orders.
+This bot is currently for backtesting and persistent paper trading only. It does
+not place real orders yet.
 
 ## Setup
 
@@ -53,36 +52,63 @@ Example:
 ```json
 {
   "stocks": {
-    "symbols": ["AAPL", "MSFT"],
-    "strategy": "simple_momentum",
-    "poll_seconds": 60.0,
+    "symbols": ["SPY", "QQQ", "IWM", "TLT", "GLD"],
+    "strategy": "daily_trend_follow",
+    "poll_seconds": 86400.0,
     "asset_class": "equity"
-  },
-  "scalps": {
-    "symbols": ["NVDA"],
-    "strategy": "simple_momentum",
-    "poll_seconds": 15.0,
-    "asset_class": "equity"
-  },
-  "crypto": {
-    "symbols": ["BTC", "ETH", "SOL"],
-    "strategy": "crypto_scalp",
-    "poll_seconds": 15.0,
-    "asset_class": "crypto"
   }
 }
 ```
 
-The initial crypto lane uses `crypto_scalp`. It is a paper-trading strategy that
-waits for short-term price history, then looks for fast EMA above slow EMA, RSI
-in a controlled momentum range, and enough estimated edge to clear small
-execution costs. Exits use take-profit, stop-loss, and trailing stop checks.
+The first recommended lane uses `daily_trend_follow`. It is a long-only daily
+trend strategy for liquid ETFs and stocks. It buys only when price and short EMA
+are above the long EMA, filters large one-day spikes, and exits on long EMA
+breaks, stop loss, or trailing stop.
 
-The default crypto polling interval is `15` seconds. That is a practical
-starting point for paper scalping with free HTTP quote data: fast enough to catch
-small moves, but slow enough to avoid excessive requests and noisy one-tick
-signals. Shorter intervals should wait until the quote source, rate limits, and
-execution costs are better modeled.
+For a $100 cash account, use conservative risk settings in
+`$env:SERVICE_ROOT\rh_agentic.json`:
+
+```json
+{
+  "broker": "paper",
+  "live_trading_enabled": false,
+  "auto_place_orders": false,
+  "paper_starting_cash": 100.0,
+  "risk": {
+    "min_order_dollars": 1.0,
+    "max_trade_dollars": 15.0,
+    "max_daily_trades": 2,
+    "max_new_buys_per_day": 1,
+    "max_open_positions": 2,
+    "min_cash_reserve": 50.0,
+    "max_total_exposure_dollars": 50.0,
+    "allow_shorts": false,
+    "allow_options": false
+  }
+}
+```
+
+For future unattended live trading through the Robinhood Agentic MCP account,
+`broker` will be `agentic_mcp`, and both `live_trading_enabled` and
+`auto_place_orders` must be `true`. Keep either flag false for review-only mode.
+Standalone MCP access also requires the optional MCP SDK:
+
+```powershell
+python -m pip install "mcp>=1.27,<2"
+```
+
+If your standalone process receives an MCP bearer token through an environment
+variable, set:
+
+```json
+{
+  "mcp_url": "https://agent.robinhood.com/mcp/trading",
+  "mcp_bearer_token_env_var": "RH_MCP_TOKEN"
+}
+```
+
+If Robinhood OAuth is only available inside Codex, keep the standalone broker in
+review-only development until a dedicated OAuth token provider is added.
 
 Expected format:
 
@@ -150,6 +176,32 @@ To run without fresh quote collection and only read the existing quote cache:
 
 ```powershell
 python -m robinhood.agentic.cli run --no-collect
+```
+
+The persistent `run` loop still uses quote snapshots. The daily trend strategy
+requires historical daily candles, so use `backtest` for this strategy until the
+candle-aware broker session is added.
+
+## Backtest The ETF Strategy
+
+From the Python repo root:
+
+```powershell
+cd C:\repo\gtvfx\robinhood\py
+$env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
+python -m robinhood.agentic.cli backtest --portfolio --range 1y --starting-cash 100 --target-dollars 10 --min-order-dollars 1 --max-trade-dollars 15 --min-cash-reserve 50 --max-open-positions 2 --max-new-buys-per-day 1 --max-daily-trades 2 --max-total-exposure-dollars 50
+```
+
+To test one symbol:
+
+```powershell
+python -m robinhood.agentic.cli backtest --symbol SPY --range 6mo --starting-cash 100 --target-dollars 10 --min-order-dollars 1 --max-trade-dollars 15 --min-cash-reserve 50
+```
+
+To check MCP broker connectivity without placing an order:
+
+```powershell
+python -m robinhood.agentic.cli mcp-check --symbol SPY
 ```
 
 ## One-Shot Analysis

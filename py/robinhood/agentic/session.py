@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import time
 
 from .bot import AgenticBot
 from .config import AgenticConfig, LaneConfig
+from .journal import JournalEntry
 from .market_data import QuoteCollector
 from .paper import PaperAccount
 from .quotes import QuoteProvider, QuoteUnavailable
@@ -42,6 +44,8 @@ class PaperSession:
         self.paper_account = paper_account or PaperAccount(config.paper_starting_cash)
         self.show_progress = show_progress
         self._lane_next_run: dict[str, float] = {}
+        self._daily_trade_count = 0
+        self._daily_trade_day = _current_trade_day()
 
     def run(self, max_iterations: int | None = None) -> SessionResult:
         iterations = 0
@@ -79,9 +83,16 @@ class PaperSession:
                                     print(f"{lane.name}/{symbol}: SKIP - {exc}")
                                 continue
 
-                        entry = self.bot.analyze(quote, strategy_name=lane.strategy)
+                        self._reset_daily_trade_count_if_needed()
+                        entry = self.bot.analyze(
+                            quote,
+                            daily_trade_count=self._daily_trade_count,
+                            strategy_name=lane.strategy,
+                        )
                         decisions += 1
                         fill = self.paper_account.apply(entry, quote)
+                        if _is_approved_trade(entry):
+                            self._daily_trade_count += 1
                         decision = entry.decision
                         print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {fill}")
 
@@ -116,6 +127,12 @@ class PaperSession:
 
     def _mark_lane_complete(self, lane: LaneConfig) -> None:
         self._lane_next_run[lane.name] = time.monotonic() + lane.poll_seconds
+
+    def _reset_daily_trade_count_if_needed(self) -> None:
+        trade_day = _current_trade_day()
+        if trade_day != self._daily_trade_day:
+            self._daily_trade_day = trade_day
+            self._daily_trade_count = 0
 
     def _sleep_seconds(self) -> float:
         if not self._lane_next_run:
@@ -163,3 +180,11 @@ def _sleep_with_progress(seconds: float, label: str, width: int = 24) -> None:
             print()
             return
         time.sleep(min(1.0, remaining))
+
+
+def _current_trade_day() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _is_approved_trade(entry: JournalEntry) -> bool:
+    return bool(entry.risk["approved"]) and entry.decision["action"] in {"BUY", "SELL"}

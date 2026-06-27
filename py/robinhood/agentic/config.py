@@ -36,8 +36,13 @@ class LaneConfig:
 class RiskConfig:
     """Hard limits enforced before any order can be reviewed or placed."""
 
+    min_order_dollars: float = 1.0
     max_trade_dollars: float = 25.0
     max_daily_trades: int = 3
+    max_new_buys_per_day: int = 1
+    max_open_positions: int = 2
+    min_cash_reserve: float = 0.0
+    max_total_exposure_dollars: float = 0.0
     allow_shorts: bool = False
     allow_options: bool = False
 
@@ -47,7 +52,12 @@ class PersonalConfig:
     """Personal account settings loaded outside the git repo."""
 
     account_number: str = ""
+    broker: str = "paper"
+    mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    mcp_bearer_token_env_var: str = ""
     dry_run: bool = True
+    live_trading_enabled: bool = False
+    auto_place_orders: bool = False
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     poll_seconds: float = 60.0
@@ -59,7 +69,12 @@ class AgenticConfig:
     """Runtime config for the first agentic bot pass."""
 
     account_number: str = ""
+    broker: str = "paper"
+    mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    mcp_bearer_token_env_var: str = ""
     dry_run: bool = True
+    live_trading_enabled: bool = False
+    auto_place_orders: bool = False
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     poll_seconds: float = 60.0
@@ -107,7 +122,12 @@ def load_config(
     risk = load_risk_config(personal_path)
     return AgenticConfig(
         account_number=personal.account_number,
+        broker=personal.broker,
+        mcp_url=personal.mcp_url,
+        mcp_bearer_token_env_var=personal.mcp_bearer_token_env_var,
         dry_run=personal.dry_run,
+        live_trading_enabled=personal.live_trading_enabled,
+        auto_place_orders=personal.auto_place_orders,
         journal_path=personal.journal_path,
         quote_source_path=personal.quote_source_path,
         poll_seconds=personal.poll_seconds,
@@ -130,6 +150,11 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
             or ""
         ),
         dry_run=bool(payload.get("dry_run", True)),
+        broker=str(payload.get("broker", "paper")),
+        mcp_url=str(payload.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),
+        mcp_bearer_token_env_var=str(payload.get("mcp_bearer_token_env_var", "")),
+        live_trading_enabled=bool(payload.get("live_trading_enabled", False)),
+        auto_place_orders=bool(payload.get("auto_place_orders", False)),
         journal_path=str(payload.get("journal_path", "logs/agentic_decisions.jsonl")),
         quote_source_path=str(payload.get("quote_source_path", "")),
         poll_seconds=float(payload.get("poll_seconds", 60.0)),
@@ -147,8 +172,15 @@ def load_risk_config(path: Path | str | None = None) -> RiskConfig:
 
     defaults = RiskConfig()
     return RiskConfig(
+        min_order_dollars=float(payload.get("min_order_dollars", defaults.min_order_dollars)),
         max_trade_dollars=float(payload.get("max_trade_dollars", defaults.max_trade_dollars)),
         max_daily_trades=int(payload.get("max_daily_trades", defaults.max_daily_trades)),
+        max_new_buys_per_day=int(payload.get("max_new_buys_per_day", defaults.max_new_buys_per_day)),
+        max_open_positions=int(payload.get("max_open_positions", defaults.max_open_positions)),
+        min_cash_reserve=float(payload.get("min_cash_reserve", defaults.min_cash_reserve)),
+        max_total_exposure_dollars=float(
+            payload.get("max_total_exposure_dollars", defaults.max_total_exposure_dollars)
+        ),
         allow_shorts=bool(payload.get("allow_shorts", defaults.allow_shorts)),
         allow_options=bool(payload.get("allow_options", defaults.allow_options)),
     )

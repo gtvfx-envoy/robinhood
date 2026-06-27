@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
+
+from .indicators import atr, ema, percent_change
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,195 @@ class HoldStrategy:
             action="HOLD",
             confidence=0.0,
             reason="lane strategy is hold",
+        )
+
+
+class DailyTrendFollowStrategy:
+    """Long-only daily trend following for small cash accounts."""
+
+    def __init__(
+        self,
+        target_dollars: float = 10.0,
+        short_period: int = 20,
+        long_period: int = 50,
+        atr_period: int = 14,
+        min_trend_pct: float = 0.05,
+        max_daily_move_pct: float = 7.5,
+        stop_loss_pct: float = -6.0,
+        trailing_stop_pct: float = 8.0,
+    ):
+        self.target_dollars = target_dollars
+        self.short_period = short_period
+        self.long_period = long_period
+        self.atr_period = atr_period
+        self.min_trend_pct = min_trend_pct
+        self.max_daily_move_pct = max_daily_move_pct
+        self.stop_loss_pct = stop_loss_pct
+        self.trailing_stop_pct = trailing_stop_pct
+        self._closes = defaultdict(lambda: deque(maxlen=max(long_period, atr_period) + 2))
+        self._highs = defaultdict(lambda: deque(maxlen=max(long_period, atr_period) + 2))
+        self._lows = defaultdict(lambda: deque(maxlen=max(long_period, atr_period) + 2))
+        self.entry_price: dict[str, float] = {}
+        self.peak_price: dict[str, float] = {}
+
+    def evaluate(self, quote: QuoteSnapshot) -> Decision:
+        symbol = quote.symbol.upper()
+        self._closes[symbol].append(quote.price)
+        self._highs[symbol].append(quote.price)
+        self._lows[symbol].append(quote.price)
+        return self._evaluate_series(
+            symbol=symbol,
+            closes=list(self._closes[symbol]),
+            highs=list(self._highs[symbol]),
+            lows=list(self._lows[symbol]),
+            has_position=symbol in self.entry_price,
+            entry_price=self.entry_price.get(symbol),
+            peak_price=self.peak_price.get(symbol),
+        )
+
+    def evaluate_candles(
+        self,
+        symbol: str,
+        candles: tuple[Any, ...] | list[Any],
+        has_position: bool = False,
+        entry_price: float | None = None,
+        peak_price: float | None = None,
+    ) -> Decision:
+        normalized = symbol.upper()
+        closes = [float(candle.close) for candle in candles]
+        highs = [float(candle.high) for candle in candles]
+        lows = [float(candle.low) for candle in candles]
+        return self._evaluate_series(
+            symbol=normalized,
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            has_position=has_position,
+            entry_price=entry_price,
+            peak_price=peak_price,
+        )
+
+    def _evaluate_series(
+        self,
+        symbol: str,
+        closes: list[float],
+        highs: list[float],
+        lows: list[float],
+        has_position: bool,
+        entry_price: float | None,
+        peak_price: float | None,
+    ) -> Decision:
+        required = max(self.long_period, self.atr_period) + 1
+        if len(closes) < required:
+            return Decision(
+                symbol=symbol,
+                action="HOLD",
+                confidence=0.0,
+                reason=f"warming up daily trend history {len(closes)}/{required}",
+            )
+
+        close = closes[-1]
+        previous_close = closes[-2]
+        short_ema = ema(closes[-self.short_period:], self.short_period)
+        long_ema = ema(closes[-self.long_period:], self.long_period)
+        trend_pct = percent_change(short_ema, long_ema)
+        day_move_pct = percent_change(close, previous_close)
+        atr_value = atr(highs, lows, closes, self.atr_period)
+        atr_pct = percent_change(close + atr_value, close)
+
+        if has_position:
+            return self._evaluate_exit(
+                symbol=symbol,
+                close=close,
+                long_ema=long_ema,
+                entry_price=entry_price or close,
+                peak_price=peak_price or close,
+            )
+
+        if abs(day_move_pct) > self.max_daily_move_pct:
+            return Decision(
+                symbol=symbol,
+                action="HOLD",
+                confidence=0.0,
+                reason=f"daily move {day_move_pct:.2f}% exceeds spike filter",
+            )
+
+        if close > long_ema and short_ema > long_ema and trend_pct >= self.min_trend_pct:
+            confidence = min(max(trend_pct / max(self.min_trend_pct * 4, 0.01), 0.0), 1.0)
+            self.entry_price[symbol] = close
+            self.peak_price[symbol] = close
+            return Decision(
+                symbol=symbol,
+                action="BUY",
+                confidence=confidence,
+                reason=(
+                    f"daily trend entry close={close:.2f} "
+                    f"ema{self.short_period}={short_ema:.2f} "
+                    f"ema{self.long_period}={long_ema:.2f} "
+                    f"trend={trend_pct:.2f}% atr={atr_pct:.2f}%"
+                ),
+                target_dollars=self.target_dollars,
+            )
+
+        return Decision(
+            symbol=symbol,
+            action="HOLD",
+            confidence=0.0,
+            reason=(
+                f"no daily trend entry close={close:.2f} "
+                f"ema{self.short_period}={short_ema:.2f} "
+                f"ema{self.long_period}={long_ema:.2f} trend={trend_pct:.2f}%"
+            ),
+        )
+
+    def _evaluate_exit(
+        self,
+        symbol: str,
+        close: float,
+        long_ema: float,
+        entry_price: float,
+        peak_price: float,
+    ) -> Decision:
+        peak = max(peak_price, close)
+        self.peak_price[symbol] = peak
+        pnl_pct = percent_change(close, entry_price)
+        drawdown_pct = percent_change(close, peak)
+
+        if close < long_ema:
+            self.entry_price.pop(symbol, None)
+            self.peak_price.pop(symbol, None)
+            return Decision(
+                symbol=symbol,
+                action="SELL",
+                confidence=1.0,
+                reason=f"daily trend exit close={close:.2f} below ema{self.long_period}={long_ema:.2f}",
+            )
+
+        if pnl_pct <= self.stop_loss_pct:
+            self.entry_price.pop(symbol, None)
+            self.peak_price.pop(symbol, None)
+            return Decision(
+                symbol=symbol,
+                action="SELL",
+                confidence=1.0,
+                reason=f"daily trend stop loss pnl={pnl_pct:.2f}%",
+            )
+
+        if drawdown_pct <= -self.trailing_stop_pct:
+            self.entry_price.pop(symbol, None)
+            self.peak_price.pop(symbol, None)
+            return Decision(
+                symbol=symbol,
+                action="SELL",
+                confidence=1.0,
+                reason=f"daily trend trailing stop drawdown={drawdown_pct:.2f}%",
+            )
+
+        return Decision(
+            symbol=symbol,
+            action="HOLD",
+            confidence=0.0,
+            reason=f"holding daily trend pnl={pnl_pct:.2f}% drawdown={drawdown_pct:.2f}%",
         )
 
 
@@ -218,6 +410,8 @@ def build_strategy(name: str, target_dollars: float = 10.0):
         return SimpleMomentumStrategy(target_dollars=target_dollars)
     if normalized == "crypto_scalp":
         return CryptoScalpStrategy(target_dollars=target_dollars)
+    if normalized in {"daily_trend_follow", "daily_trend"}:
+        return DailyTrendFollowStrategy(target_dollars=target_dollars)
     if normalized in {"hold", "none"}:
         return HoldStrategy()
     raise ValueError(f"unknown strategy: {name}")

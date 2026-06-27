@@ -4,6 +4,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
+from robinhood.agentic.broker import OrderIntent, PaperBroker
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.config import (
     AgenticConfig,
@@ -16,13 +18,33 @@ from robinhood.agentic.config import (
     load_personal_config,
     load_symbols,
 )
+from robinhood.agentic.execution import plan_order_intent
 from robinhood.agentic.journal import DecisionJournal
-from robinhood.agentic.market_data import QuoteCollector, StaticMarketDataSource
+from robinhood.agentic.market_data import (
+    Candle,
+    CandleCollector,
+    QuoteCollector,
+    StaticHistoricalMarketDataSource,
+    StaticMarketDataSource,
+)
+from robinhood.agentic.mcp_broker import AgenticMcpEquityBroker
+from robinhood.agentic.mcp_client import (
+    McpClientUnavailable,
+    StreamableHttpMcpToolClient,
+    decode_mcp_tool_result,
+)
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
 from robinhood.agentic.session import PaperSession
-from robinhood.agentic.strategy import CryptoScalpStrategy, Decision, QuoteSnapshot, SimpleMomentumStrategy
+from robinhood.agentic.strategy import (
+    CryptoScalpStrategy,
+    DailyTrendFollowStrategy,
+    Decision,
+    QuoteSnapshot,
+    SimpleMomentumStrategy,
+    build_strategy,
+)
 
 
 class AgenticBotTests(unittest.TestCase):
@@ -84,7 +106,12 @@ class AgenticBotTests(unittest.TestCase):
                 json.dumps(
                     {
                         "account_number": "123456789",
+                        "broker": "agentic_mcp",
+                        "mcp_url": "https://agent.robinhood.com/mcp/trading",
+                        "mcp_bearer_token_env_var": "RH_MCP_TOKEN",
                         "dry_run": True,
+                        "live_trading_enabled": False,
+                        "auto_place_orders": False,
                         "journal_path": "R:/service/agentic_decisions.jsonl",
                         "quote_source_path": "R:/service/rh_quotes.json",
                         "poll_seconds": 30,
@@ -97,7 +124,12 @@ class AgenticBotTests(unittest.TestCase):
             config = load_personal_config(config_path)
 
         self.assertEqual(config.account_number, "123456789")
+        self.assertEqual(config.broker, "agentic_mcp")
+        self.assertEqual(config.mcp_url, "https://agent.robinhood.com/mcp/trading")
+        self.assertEqual(config.mcp_bearer_token_env_var, "RH_MCP_TOKEN")
         self.assertTrue(config.dry_run)
+        self.assertFalse(config.live_trading_enabled)
+        self.assertFalse(config.auto_place_orders)
         self.assertEqual(config.journal_path, "R:/service/agentic_decisions.jsonl")
         self.assertEqual(config.quote_source_path, "R:/service/rh_quotes.json")
         self.assertEqual(config.poll_seconds, 30.0)
@@ -115,7 +147,10 @@ class AgenticBotTests(unittest.TestCase):
                 json.dumps(
                     {
                         "account_number": "123456789",
+                        "broker": "paper",
                         "dry_run": True,
+                        "live_trading_enabled": True,
+                        "auto_place_orders": True,
                         "risk": {"max_trade_dollars": 7, "max_daily_trades": 2},
                     }
                 ),
@@ -125,9 +160,47 @@ class AgenticBotTests(unittest.TestCase):
             config = load_config(symbols_path, personal_path)
 
         self.assertEqual(config.account_number, "123456789")
+        self.assertEqual(config.broker, "paper")
+        self.assertTrue(config.live_trading_enabled)
+        self.assertTrue(config.auto_place_orders)
         self.assertEqual(config.symbols.stocks, ("AAPL",))
         self.assertEqual(config.risk.max_trade_dollars, 7.0)
         self.assertEqual(config.risk.max_daily_trades, 2)
+
+    def test_load_config_reads_small_account_risk_controls(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            symbols_path = Path(tmp_dir) / "symbols.cfg"
+            personal_path = Path(tmp_dir) / "rh_agentic.json"
+            symbols_path.write_text(json.dumps({"stocks": ["SPY"], "crypto": []}), encoding="utf-8")
+            personal_path.write_text(
+                json.dumps(
+                    {
+                        "risk": {
+                            "min_order_dollars": 1,
+                            "max_trade_dollars": 15,
+                            "max_daily_trades": 2,
+                            "max_new_buys_per_day": 1,
+                            "max_open_positions": 2,
+                            "min_cash_reserve": 50,
+                            "max_total_exposure_dollars": 50,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(symbols_path, personal_path)
+
+        self.assertEqual(config.risk.min_order_dollars, 1.0)
+        self.assertEqual(config.risk.max_trade_dollars, 15.0)
+        self.assertEqual(config.risk.max_daily_trades, 2)
+        self.assertEqual(config.risk.max_new_buys_per_day, 1)
+        self.assertEqual(config.risk.max_open_positions, 2)
+        self.assertEqual(config.risk.min_cash_reserve, 50.0)
+        self.assertEqual(config.risk.max_total_exposure_dollars, 50.0)
 
     def test_personal_config_path_uses_service_root(self):
         old_value = os.environ.get("SERVICE_ROOT")
@@ -202,6 +275,48 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(decision.action, "SELL")
         self.assertIn("take profit", decision.reason)
 
+    def test_daily_trend_follow_buys_on_positive_daily_trend(self):
+        strategy = DailyTrendFollowStrategy(
+            short_period=3,
+            long_period=5,
+            atr_period=3,
+            min_trend_pct=0.01,
+            target_dollars=10.0,
+        )
+        candles = _daily_candles("SPY", [100, 101, 102, 103, 104, 105])
+
+        decision = strategy.evaluate_candles("SPY", candles)
+
+        self.assertEqual(decision.action, "BUY")
+        self.assertEqual(decision.target_dollars, 10.0)
+        self.assertIn("daily trend entry", decision.reason)
+
+    def test_daily_trend_follow_sells_when_close_breaks_long_ema(self):
+        strategy = DailyTrendFollowStrategy(
+            short_period=3,
+            long_period=5,
+            atr_period=3,
+            min_trend_pct=0.01,
+        )
+        candles = _daily_candles("SPY", [100, 101, 102, 103, 104, 95])
+
+        decision = strategy.evaluate_candles(
+            "SPY",
+            candles,
+            has_position=True,
+            entry_price=100.0,
+            peak_price=104.0,
+        )
+
+        self.assertEqual(decision.action, "SELL")
+        self.assertIn("below ema", decision.reason)
+
+    def test_build_strategy_supports_daily_trend_follow(self):
+        strategy = build_strategy("daily_trend_follow", target_dollars=9.0)
+
+        self.assertIsInstance(strategy, DailyTrendFollowStrategy)
+        self.assertEqual(strategy.target_dollars, 9.0)
+
     def test_risk_rejects_unlisted_symbol(self):
         config = AgenticConfig(symbols=SymbolConfig(stocks=("AAPL",)))
         manager = RiskManager(config)
@@ -230,6 +345,236 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertFalse(result.approved)
         self.assertIn("max trade size", result.reason)
+
+    def test_risk_rejects_trade_size_below_minimum(self):
+        config = AgenticConfig(
+            symbols=SymbolConfig(stocks=("AAPL",)),
+            risk=RiskConfig(min_order_dollars=1.0, max_trade_dollars=5.0),
+        )
+        manager = RiskManager(config)
+
+        result = manager.evaluate(Decision("AAPL", "BUY", 1.0, "test", target_dollars=0.5))
+
+        self.assertFalse(result.approved)
+        self.assertIn("minimum order size", result.reason)
+
+    def test_order_intent_requires_one_sizing_field(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            OrderIntent("SPY", "buy")
+
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            OrderIntent("SPY", "buy", dollar_amount=10.0, quantity=1.0)
+
+    def test_paper_broker_reviews_and_places_fractional_buy(self):
+        broker = PaperBroker(starting_cash=100.0)
+        intent = OrderIntent("spy", "buy", dollar_amount=10.0, ref_id="order-1")
+
+        review = broker.review_order(intent, price=100.0)
+        result = broker.place_order(intent, price=100.0)
+        snapshot = broker.get_account_snapshot()
+
+        self.assertTrue(review.approved)
+        self.assertAlmostEqual(review.estimated_quantity, 0.1)
+        self.assertTrue(result.placed)
+        self.assertEqual(result.order_id, "order-1")
+        self.assertAlmostEqual(snapshot.cash, 90.0)
+        self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.1)
+
+    def test_paper_broker_rejects_buy_above_cash(self):
+        broker = PaperBroker(starting_cash=5.0)
+        intent = OrderIntent("SPY", "buy", dollar_amount=10.0)
+
+        result = broker.place_order(intent, price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("insufficient", result.reason)
+
+    def test_paper_broker_sells_existing_position_only(self):
+        broker = PaperBroker(starting_cash=100.0)
+        broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        sell = broker.place_order(OrderIntent("SPY", "sell", quantity=0.05), price=110.0)
+        rejected = broker.place_order(OrderIntent("SPY", "sell", quantity=1.0), price=110.0)
+        snapshot = broker.get_account_snapshot()
+
+        self.assertTrue(sell.placed)
+        self.assertAlmostEqual(sell.filled_quantity, 0.05)
+        self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.05)
+        self.assertFalse(rejected.placed)
+        self.assertIn("exceed", rejected.reason)
+
+    def test_plan_order_intent_sizes_buy_with_cash_reserve(self):
+        broker = PaperBroker(starting_cash=55.0)
+        decision = Decision("SPY", "BUY", 1.0, "test", target_dollars=10.0)
+
+        plan = plan_order_intent(
+            decision,
+            broker.get_account_snapshot(),
+            RiskConfig(
+                min_order_dollars=1.0,
+                max_trade_dollars=15.0,
+                min_cash_reserve=50.0,
+                max_open_positions=2,
+                max_total_exposure_dollars=50.0,
+            ),
+            price=100.0,
+        )
+
+        self.assertTrue(plan.approved)
+        self.assertEqual(plan.intent.side, "buy")
+        self.assertEqual(plan.intent.dollar_amount, 5.0)
+
+    def test_plan_order_intent_rejects_when_open_position_limit_reached(self):
+        broker = PaperBroker(starting_cash=100.0)
+        broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        plan = plan_order_intent(
+            Decision("QQQ", "BUY", 1.0, "test", target_dollars=10.0),
+            broker.get_account_snapshot(),
+            RiskConfig(max_open_positions=1, min_cash_reserve=50.0),
+            price=200.0,
+        )
+
+        self.assertFalse(plan.approved)
+        self.assertIn("max open positions", plan.reason)
+
+    def test_plan_order_intent_creates_sell_for_existing_quantity(self):
+        broker = PaperBroker(starting_cash=100.0)
+        broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        plan = plan_order_intent(
+            Decision("SPY", "SELL", 1.0, "test"),
+            broker.get_account_snapshot(),
+            RiskConfig(),
+            price=101.0,
+        )
+
+        self.assertTrue(plan.approved)
+        self.assertEqual(plan.intent.side, "sell")
+        self.assertAlmostEqual(plan.intent.quantity, 0.1)
+
+    def test_plan_order_intent_rejects_sell_without_position(self):
+        plan = plan_order_intent(
+            Decision("SPY", "SELL", 1.0, "test"),
+            PaperBroker(starting_cash=100.0).get_account_snapshot(),
+            RiskConfig(),
+            price=101.0,
+        )
+
+        self.assertFalse(plan.approved)
+        self.assertIn("no open", plan.reason)
+
+    def test_agentic_mcp_broker_reads_account_snapshot(self):
+        client = _FakeMcpClient(
+            {
+                "get_portfolio": {"buying_power": "100.00"},
+                "get_equity_positions": {
+                    "results": [
+                        {"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}
+                    ]
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        snapshot = broker.get_account_snapshot()
+
+        self.assertEqual(snapshot.cash, 100.0)
+        self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.1)
+
+    def test_agentic_mcp_broker_review_only_does_not_place(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {"id": "live-order"},
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "reviewed")
+        self.assertNotIn("place_equity_order", client.calls)
+
+    def test_agentic_mcp_broker_places_when_live_gates_enabled(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {
+                    "id": "live-order",
+                    "state": "submitted",
+                    "quantity": "0.1",
+                    "average_price": "100.0",
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        self.assertTrue(result.placed)
+        self.assertEqual(result.order_id, "live-order")
+        self.assertIn("place_equity_order", client.calls)
+
+    def test_agentic_mcp_broker_blocks_untradable_symbol(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {
+                    "results": [{"symbol": "SPY", "tradable": False}]
+                },
+                "review_equity_order": {"status": "approved"},
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        review = broker.review_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        self.assertFalse(review.approved)
+        self.assertIn("tradable=false", review.alerts[0])
+        self.assertNotIn("review_equity_order", client.calls)
+
+    def test_streamable_http_mcp_client_reads_bearer_token_from_env(self):
+        old_value = os.environ.get("RH_MCP_TOKEN")
+        os.environ["RH_MCP_TOKEN"] = "secret"
+        try:
+            client = StreamableHttpMcpToolClient(
+                "https://agent.robinhood.com/mcp/trading",
+                bearer_token_env_var="RH_MCP_TOKEN",
+            )
+            headers = client._headers()
+        finally:
+            if old_value is None:
+                os.environ.pop("RH_MCP_TOKEN", None)
+            else:
+                os.environ["RH_MCP_TOKEN"] = old_value
+
+        self.assertEqual(headers["Authorization"], "Bearer secret")
+
+    def test_streamable_http_mcp_client_reports_missing_sdk(self):
+        client = StreamableHttpMcpToolClient("https://agent.robinhood.com/mcp/trading")
+
+        with self.assertRaises(McpClientUnavailable):
+            client.call_tool("get_portfolio", {"account_number": "123"})
+
+    def test_decode_mcp_tool_result_reads_json_text_content(self):
+        class TextContent:
+            text = '{"buying_power": "100.00"}'
+
+        class Result:
+            content = [TextContent()]
+
+        decoded = decode_mcp_tool_result(Result())
+
+        self.assertEqual(decoded["buying_power"], "100.00")
 
     def test_bot_writes_journal_entry(self):
         import tempfile
@@ -365,6 +710,141 @@ class AgenticBotTests(unittest.TestCase):
         self.assertIn("AAPL", quotes)
         self.assertEqual(payload["symbols"]["AAPL"]["price"], 102)
 
+    def test_candle_collector_writes_cache(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "candles.json"
+            candles = tuple(_daily_candles("SPY", [100, 101, 102]))
+            collector = CandleCollector(
+                source=StaticHistoricalMarketDataSource({"SPY": candles}),
+                cache_path=cache_path,
+            )
+
+            collected, errors = collector.collect(["SPY"])
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(errors, {})
+        self.assertEqual(len(collected["SPY"]), 3)
+        self.assertEqual(payload["symbols"]["SPY"][-1]["close"], 102)
+
+    def test_daily_trend_backtest_records_buy_and_open_value(self):
+        strategy = DailyTrendFollowStrategy(
+            short_period=3,
+            long_period=5,
+            atr_period=3,
+            min_trend_pct=0.01,
+            target_dollars=10.0,
+        )
+
+        result = run_daily_trend_backtest(
+            "SPY",
+            _daily_candles("SPY", [100, 101, 102, 103, 104, 105]),
+            starting_cash=100.0,
+            target_dollars=10.0,
+            min_cash_reserve=50.0,
+            slippage_pct=0.0,
+            strategy=strategy,
+        )
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].side, "BUY")
+        self.assertAlmostEqual(result.ending_cash, 90.0)
+        self.assertGreater(result.ending_value, 99.0)
+        self.assertEqual(len(result.equity_curve), 6)
+
+    def test_daily_trend_backtest_records_sell_after_breakdown(self):
+        strategy = DailyTrendFollowStrategy(
+            short_period=3,
+            long_period=5,
+            atr_period=3,
+            min_trend_pct=0.01,
+            target_dollars=10.0,
+        )
+
+        result = run_daily_trend_backtest(
+            "SPY",
+            _daily_candles("SPY", [100, 101, 102, 103, 104, 105, 95]),
+            starting_cash=100.0,
+            target_dollars=10.0,
+            min_cash_reserve=50.0,
+            slippage_pct=0.0,
+            strategy=strategy,
+        )
+
+        self.assertEqual(tuple(trade.side for trade in result.trades), ("BUY", "SELL"))
+        self.assertLess(result.ending_value, 100.0)
+        self.assertLess(result.max_drawdown_pct, 0.0)
+
+    def test_daily_trend_backtest_respects_cash_reserve(self):
+        strategy = DailyTrendFollowStrategy(
+            short_period=3,
+            long_period=5,
+            atr_period=3,
+            min_trend_pct=0.01,
+            target_dollars=10.0,
+        )
+
+        result = run_daily_trend_backtest(
+            "SPY",
+            _daily_candles("SPY", [100, 101, 102, 103, 104, 105]),
+            starting_cash=55.0,
+            target_dollars=10.0,
+            min_cash_reserve=50.0,
+            slippage_pct=0.0,
+            strategy=strategy,
+        )
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertAlmostEqual(result.trades[0].dollars, 5.0)
+        self.assertAlmostEqual(result.ending_cash, 50.0)
+
+    def test_daily_trend_portfolio_backtest_limits_new_buys_per_day(self):
+        candles = {
+            "SPY": tuple(_daily_candles("SPY", [100 + index for index in range(60)])),
+            "QQQ": tuple(_daily_candles("QQQ", [200 + index for index in range(60)])),
+        }
+
+        result = run_daily_trend_portfolio_backtest(
+            candles,
+            starting_cash=100.0,
+            target_dollars=10.0,
+            min_cash_reserve=50.0,
+            max_open_positions=2,
+            max_new_buys_per_day=1,
+            max_daily_trades=2,
+            max_total_exposure_dollars=50.0,
+            slippage_pct=0.0,
+        )
+
+        self.assertEqual(len(result.trades), 2)
+        self.assertEqual(tuple(trade.side for trade in result.trades), ("BUY", "BUY"))
+        self.assertNotEqual(result.trades[0].date, result.trades[1].date)
+        self.assertAlmostEqual(result.ending_cash, 80.0)
+
+    def test_daily_trend_portfolio_backtest_limits_open_positions(self):
+        candles = {
+            "SPY": tuple(_daily_candles("SPY", [100 + index for index in range(60)])),
+            "QQQ": tuple(_daily_candles("QQQ", [200 + index for index in range(60)])),
+            "IWM": tuple(_daily_candles("IWM", [50 + index for index in range(60)])),
+        }
+
+        result = run_daily_trend_portfolio_backtest(
+            candles,
+            starting_cash=100.0,
+            target_dollars=10.0,
+            min_cash_reserve=50.0,
+            max_open_positions=2,
+            max_new_buys_per_day=3,
+            max_daily_trades=3,
+            max_total_exposure_dollars=50.0,
+            slippage_pct=0.0,
+        )
+
+        buy_trades = [trade for trade in result.trades if trade.side == "BUY"]
+        self.assertEqual(len(buy_trades), 2)
+        self.assertAlmostEqual(result.ending_cash, 80.0)
+
     def test_paper_session_collects_quotes_before_decision(self):
         import tempfile
 
@@ -422,6 +902,46 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(result.collection_errors, 1)
         self.assertEqual(result.skipped_quotes, 0)
 
+    def test_paper_session_enforces_daily_trade_limit(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            quote_path.write_text(
+                json.dumps(
+                    {
+                        "AAPL": {"price": 102, "previous_close": 100},
+                        "MSFT": {"price": 204, "previous_close": 200},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL", "MSFT")),
+                risk=RiskConfig(max_daily_trades=1),
+                paper_starting_cash=100.0,
+            )
+            session = PaperSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(quote_path),
+                paper_account=PaperAccount(cash=100.0),
+                show_progress=False,
+            )
+
+            result = session.run(max_iterations=1)
+            rows = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(result.decisions, 2)
+        self.assertAlmostEqual(result.paper_cash, 90.0)
+        self.assertEqual(rows[0]["risk"]["reason"], "approved for dry-run review")
+        self.assertFalse(rows[1]["risk"]["approved"])
+        self.assertEqual(rows[1]["risk"]["reason"], "daily trade limit reached")
+
     def test_session_reports_next_due_lane_names(self):
         import tempfile
 
@@ -465,6 +985,33 @@ class AgenticBotTests(unittest.TestCase):
         self.assertTrue(result.interrupted)
         self.assertEqual(result.iterations, 1)
         self.assertEqual(result.decisions, 1)
+
+def _daily_candles(symbol, closes):
+    from datetime import date, timedelta
+
+    start = date(2026, 1, 1)
+    return [
+        Candle(
+            symbol=symbol,
+            date=start + timedelta(days=index),
+            open=close - 0.25,
+            high=close + 0.5,
+            low=close - 0.5,
+            close=close,
+            volume=1000000,
+        )
+        for index, close in enumerate(closes)
+    ]
+
+
+class _FakeMcpClient:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def call_tool(self, name, arguments):
+        self.calls.append(name)
+        return self.responses.get(name, {})
 
 
 if __name__ == "__main__":

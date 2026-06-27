@@ -1,8 +1,8 @@
 # Agentic Technical Notes
 
 This package contains the local agentic trading scaffold. It is intentionally
-dry-run and paper-trading first. Live order review and placement should be added
-behind explicit confirmation boundaries.
+backtest and paper-trading first. Live order placement should be added only
+behind explicit config gates and hard risk caps.
 
 ## Architecture
 
@@ -31,19 +31,51 @@ Example personal config:
 ```json
 {
   "account_number": "551641152",
+  "broker": "paper",
   "dry_run": true,
+  "live_trading_enabled": false,
+  "auto_place_orders": false,
   "journal_path": "R:/service/rh_agentic_decisions.jsonl",
   "quote_source_path": "R:/service/rh_quotes.json",
   "poll_seconds": 60.0,
-  "paper_starting_cash": 10000.0,
+  "paper_starting_cash": 100.0,
   "risk": {
-    "max_trade_dollars": 25.0,
-    "max_daily_trades": 3,
+    "min_order_dollars": 1.0,
+    "max_trade_dollars": 15.0,
+    "max_daily_trades": 2,
+    "max_new_buys_per_day": 1,
+    "max_open_positions": 2,
+    "min_cash_reserve": 50.0,
+    "max_total_exposure_dollars": 50.0,
     "allow_shorts": false,
     "allow_options": false
   }
 }
 ```
+
+For future live trading through the Robinhood Agentic MCP broker, both
+`live_trading_enabled` and `auto_place_orders` must be set to `true`. Leaving
+either one false keeps the MCP broker in review-only mode.
+
+Standalone MCP access requires the optional MCP SDK:
+
+```powershell
+python -m pip install "mcp>=1.27,<2"
+```
+
+The Streamable HTTP client can send a bearer token from an environment variable
+when configured:
+
+```json
+{
+  "mcp_url": "https://agent.robinhood.com/mcp/trading",
+  "mcp_bearer_token_env_var": "RH_MCP_TOKEN"
+}
+```
+
+If OAuth is not available as a bearer token, keep using Codex for development
+and add a dedicated OAuth token provider before running the standalone live
+broker.
 
 ## Quote Providers
 
@@ -66,6 +98,9 @@ fields are reported as `QuoteUnavailable`.
 
 Current strategies:
 
+- `daily_trend_follow`: long-only daily EMA trend following for liquid ETFs and
+  stocks. It buys when price and short EMA are above long EMA, avoids large
+  one-day spikes, and exits on long EMA break, stop loss, or trailing stop.
 - `simple_momentum`: compares current price with previous close.
 - `crypto_scalp`: stateful paper scalping strategy for crypto lanes. It keeps
   rolling in-memory price history, enters when fast EMA is above slow EMA with
@@ -73,9 +108,14 @@ Current strategies:
   or trailing stop.
 - `hold`: always returns `HOLD`.
 
-The crypto scalp defaults are intentionally conservative and should be
-backtested before any live execution path exists. The current default crypto
-lane polls every `15` seconds.
+The tracked default lane is ETF-first: `SPY`, `QQQ`, `IWM`, `TLT`, and `GLD`
+using `daily_trend_follow`. Crypto is disabled in tracked config for the first
+small-account live path.
+
+`daily_trend_follow` is designed for backtests and future candle-aware paper/live
+execution. The existing persistent `run` loop still operates on quote snapshots;
+do not use it as the live execution path for daily trend following until the
+broker/candle session layer is added.
 
 Supported quote file shapes:
 
@@ -128,6 +168,20 @@ One-shot analysis:
 ```powershell
 $env:SERVICE_ROOT='R:\service'
 python -m robinhood.agentic.cli analyze --symbol AAPL --price 205 --previous-close 200
+```
+
+Backtest the ETF universe with the $100 account constraints as one shared-cash
+portfolio:
+
+```powershell
+$env:SERVICE_ROOT='R:\service'
+python -m robinhood.agentic.cli backtest --portfolio --range 1y --starting-cash 100 --target-dollars 10 --min-order-dollars 1 --max-trade-dollars 15 --min-cash-reserve 50 --max-open-positions 2 --max-new-buys-per-day 1 --max-daily-trades 2 --max-total-exposure-dollars 50
+```
+
+Check Agentic MCP broker connectivity in review-only mode:
+
+```powershell
+python -m robinhood.agentic.cli mcp-check --symbol SPY
 ```
 
 Persistent paper session:
