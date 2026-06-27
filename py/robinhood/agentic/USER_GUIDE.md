@@ -107,8 +107,33 @@ variable, set:
 }
 ```
 
-If Robinhood OAuth is only available inside Codex, keep the standalone broker in
-review-only development until a dedicated OAuth token provider is added.
+For the browser OAuth path, you do not need to provide a client secret. Add the
+account number and, optionally, a token-store path:
+
+```json
+{
+  "account_number": "551641152",
+  "mcp_url": "https://agent.robinhood.com/mcp/trading",
+  "mcp_token_store_path": "R:/service/rh_agentic_mcp_tokens.json",
+  "mcp_oauth_callback_port": 8765
+}
+```
+
+If `mcp_token_store_path` is omitted, the bot uses:
+
+```text
+$env:SERVICE_ROOT\rh_agentic_mcp_tokens.json
+```
+
+Treat that token file like a password because it can authorize account access.
+Run this once to start the browser authorization flow:
+
+```powershell
+python -m robinhood.agentic.cli mcp-login
+```
+
+The CLI opens Robinhood in the browser and listens locally at
+`http://127.0.0.1:<mcp_oauth_callback_port>/callback` for the OAuth redirect.
 
 Expected format:
 
@@ -201,8 +226,13 @@ python -m robinhood.agentic.cli backtest --symbol SPY --range 6mo --starting-cas
 To check MCP broker connectivity without placing an order:
 
 ```powershell
+$env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
+python -m robinhood.agentic.cli mcp-login
 python -m robinhood.agentic.cli mcp-check --symbol SPY
 ```
+
+`mcp-check` reviews a $1 buy for the selected symbol and keeps the broker in
+review-only mode.
 
 ## One-Shot Analysis
 

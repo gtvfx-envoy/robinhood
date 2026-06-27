@@ -29,7 +29,7 @@ from robinhood.agentic.market_data import (
 )
 from robinhood.agentic.mcp_broker import AgenticMcpEquityBroker
 from robinhood.agentic.mcp_client import (
-    McpClientUnavailable,
+    JsonTokenStorage,
     StreamableHttpMcpToolClient,
     decode_mcp_tool_result,
 )
@@ -109,6 +109,9 @@ class AgenticBotTests(unittest.TestCase):
                         "broker": "agentic_mcp",
                         "mcp_url": "https://agent.robinhood.com/mcp/trading",
                         "mcp_bearer_token_env_var": "RH_MCP_TOKEN",
+                        "mcp_token_store_path": "R:/service/rh_agentic_mcp_tokens.json",
+                        "mcp_oauth_callback_port": 8766,
+                        "mcp_oauth_scope": "trading",
                         "dry_run": True,
                         "live_trading_enabled": False,
                         "auto_place_orders": False,
@@ -127,6 +130,9 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(config.broker, "agentic_mcp")
         self.assertEqual(config.mcp_url, "https://agent.robinhood.com/mcp/trading")
         self.assertEqual(config.mcp_bearer_token_env_var, "RH_MCP_TOKEN")
+        self.assertEqual(config.mcp_token_store_path, "R:/service/rh_agentic_mcp_tokens.json")
+        self.assertEqual(config.mcp_oauth_callback_port, 8766)
+        self.assertEqual(config.mcp_oauth_scope, "trading")
         self.assertTrue(config.dry_run)
         self.assertFalse(config.live_trading_enabled)
         self.assertFalse(config.auto_place_orders)
@@ -559,11 +565,26 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertEqual(headers["Authorization"], "Bearer secret")
 
-    def test_streamable_http_mcp_client_reports_missing_sdk(self):
-        client = StreamableHttpMcpToolClient("https://agent.robinhood.com/mcp/trading")
+    def test_streamable_http_mcp_client_prefers_bearer_token_over_oauth(self):
+        client = StreamableHttpMcpToolClient(
+            "https://agent.robinhood.com/mcp/trading",
+            bearer_token="secret",
+            oauth_token_store_path="R:/service/rh_agentic_mcp_tokens.json",
+        )
 
-        with self.assertRaises(McpClientUnavailable):
-            client.call_tool("get_portfolio", {"account_number": "123"})
+        self.assertIsNone(client._oauth_auth())
+
+    def test_json_token_storage_handles_missing_and_invalid_files(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "tokens.json"
+            storage = JsonTokenStorage(path)
+
+            self.assertFalse(storage.has_tokens())
+            path.write_text("not json", encoding="utf-8")
+
+            self.assertFalse(storage.has_tokens())
 
     def test_decode_mcp_tool_result_reads_json_text_content(self):
         class TextContent:

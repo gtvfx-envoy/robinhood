@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import os
 from pathlib import Path
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
@@ -46,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_check = subparsers.add_parser("mcp-check", help="Check Agentic MCP broker connectivity.")
     mcp_check.add_argument("--symbol", default="SPY", help="Symbol to check tradability for.")
     _add_common_args(mcp_check)
+
+    mcp_login = subparsers.add_parser("mcp-login", help="Authorize the standalone Agentic MCP client.")
+    _add_common_args(mcp_login)
 
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
@@ -217,10 +221,7 @@ def main() -> int:
     if args.command == "mcp-check":
         if not config.account_number:
             raise SystemExit("mcp-check requires account_number in personal config")
-        client = StreamableHttpMcpToolClient(
-            config.mcp_url,
-            bearer_token_env_var=config.mcp_bearer_token_env_var or None,
-        )
+        client = _build_mcp_client(config)
         broker = AgenticMcpEquityBroker(
             account_number=config.account_number,
             client=client,
@@ -239,6 +240,17 @@ def main() -> int:
             print(f"review_alerts={list(intent.alerts)}")
         return 0
 
+    if args.command == "mcp-login":
+        client = _build_mcp_client(config)
+        payload = client.call_tool("get_accounts", {})
+        token_path = _mcp_token_store_path(config)
+        print(f"mcp_login_complete token_store={token_path}")
+        if isinstance(payload, dict):
+            results = payload.get("results")
+            if isinstance(results, list):
+                print(f"accounts={len(results)}")
+        return 0
+
     quote = ManualQuoteProvider(args.price, args.previous_close).get_quote(args.symbol.strip().upper())
     entry = bot.analyze(quote)
 
@@ -253,6 +265,25 @@ def main() -> int:
 
 def _mcp_check_intent(symbol: str) -> OrderIntent:
     return OrderIntent(symbol=symbol, side="buy", dollar_amount=1.0)
+
+
+def _build_mcp_client(config) -> StreamableHttpMcpToolClient:
+    return StreamableHttpMcpToolClient(
+        config.mcp_url,
+        bearer_token_env_var=config.mcp_bearer_token_env_var or None,
+        oauth_token_store_path=_mcp_token_store_path(config),
+        oauth_callback_port=config.mcp_oauth_callback_port,
+        oauth_scope=config.mcp_oauth_scope or None,
+    )
+
+
+def _mcp_token_store_path(config) -> Path:
+    if config.mcp_token_store_path:
+        return Path(config.mcp_token_store_path)
+    service_root = os.environ.get("SERVICE_ROOT")
+    if not service_root:
+        raise RuntimeError("SERVICE_ROOT must be set for MCP token storage")
+    return Path(service_root) / "rh_agentic_mcp_tokens.json"
 
 
 if __name__ == "__main__":
