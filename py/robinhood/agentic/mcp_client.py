@@ -63,7 +63,12 @@ class StreamableHttpMcpToolClient:
 
         auth = self._oauth_auth()
         headers = self._headers()
-        async with streamablehttp_client(self.url, headers=headers, auth=auth) as (read, write, _):
+        async with streamablehttp_client(
+            self.url,
+            headers=headers,
+            auth=auth,
+            terminate_on_close=False,
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(name, arguments)

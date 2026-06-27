@@ -489,6 +489,49 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(snapshot.cash, 100.0)
         self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.1)
 
+    def test_agentic_mcp_broker_reads_data_wrapped_account_snapshot(self):
+        client = _FakeMcpClient(
+            {
+                "get_portfolio": {
+                    "data": {
+                        "cash": "100.00",
+                        "buying_power": {"buying_power": "125.00"},
+                    },
+                    "guide": {},
+                },
+                "get_equity_positions": {
+                    "data": {
+                        "positions": [
+                            {"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}
+                        ]
+                    },
+                    "guide": {},
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        snapshot = broker.get_account_snapshot()
+
+        self.assertEqual(snapshot.cash, 100.0)
+        self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.1)
+
+    def test_agentic_mcp_broker_reads_nested_buying_power_when_cash_missing(self):
+        client = _FakeMcpClient(
+            {
+                "get_portfolio": {
+                    "data": {"buying_power": {"buying_power": "125.00"}},
+                    "guide": {},
+                },
+                "get_equity_positions": {"data": {"positions": []}},
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        snapshot = broker.get_account_snapshot()
+
+        self.assertEqual(snapshot.cash, 125.0)
+
     def test_agentic_mcp_broker_review_only_does_not_place(self):
         client = _FakeMcpClient(
             {
@@ -504,6 +547,33 @@ class AgenticBotTests(unittest.TestCase):
         self.assertFalse(result.placed)
         self.assertEqual(result.status, "reviewed")
         self.assertNotIn("place_equity_order", client.calls)
+
+    def test_agentic_mcp_broker_review_uses_mcp_order_schema(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        broker.review_order(
+            OrderIntent("SPY", "buy", dollar_amount=10.0, ref_id="local-order-id"),
+            price=100.0,
+        )
+
+        self.assertEqual(
+            client.call_arguments["review_equity_order"],
+            {
+                "account_number": "123",
+                "symbol": "SPY",
+                "side": "buy",
+                "type": "market",
+                "market_hours": "regular_hours",
+                "time_in_force": "gfd",
+                "dollar_amount": "10.00",
+            },
+        )
 
     def test_agentic_mcp_broker_places_when_live_gates_enabled(self):
         client = _FakeMcpClient(
@@ -1029,9 +1099,11 @@ class _FakeMcpClient:
     def __init__(self, responses):
         self.responses = responses
         self.calls = []
+        self.call_arguments = {}
 
     def call_tool(self, name, arguments):
         self.calls.append(name)
+        self.call_arguments[name] = arguments
         return self.responses.get(name, {})
 
 

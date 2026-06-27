@@ -42,7 +42,16 @@ class AgenticMcpEquityBroker(Broker):
         positions_payload = _as_mapping(
             self.client.call_tool("get_equity_positions", {"account_number": self.account_number})
         )
-        cash = _extract_float(portfolio, ("buying_power", "cash", "cash_available_for_withdrawal"))
+        cash = _extract_float(
+            portfolio,
+            (
+                "cash",
+                "buying_power",
+                "cash_available_for_withdrawal",
+                "buying_power.buying_power",
+                "buying_power.unleveraged_buying_power",
+            ),
+        )
         return AccountSnapshot(
             cash=cash,
             positions=_extract_positions(positions_payload),
@@ -129,19 +138,21 @@ class AgenticMcpEquityBroker(Broker):
             arguments["quantity"] = f"{intent.quantity:.6f}".rstrip("0").rstrip(".")
         if intent.limit_price is not None:
             arguments["limit_price"] = f"{intent.limit_price:.2f}"
-        arguments["ref_id"] = intent.ref_id
         return arguments
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
+        data = value.get("data")
+        if isinstance(data, dict):
+            return data
         return value
     return {}
 
 
 def _extract_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float:
     for key in keys:
-        value = payload.get(key)
+        value = _get_path(payload, key)
         if value is None:
             continue
         try:
@@ -149,6 +160,15 @@ def _extract_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float:
         except (TypeError, ValueError):
             continue
     return 0.0
+
+
+def _get_path(payload: dict[str, Any], path: str) -> Any:
+    value: Any = payload
+    for key in path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
 
 
 def _extract_positions(payload: dict[str, Any]) -> dict[str, Position]:
