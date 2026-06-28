@@ -270,10 +270,15 @@ commands:
 python -m robinhood.agentic.cli mcp-tools --filter order
 python -m robinhood.agentic.cli mcp-orders --symbol SPY --limit 5
 python -m robinhood.agentic.cli mcp-orders --order-id <broker-order-id>
+python -m robinhood.agentic.cli mcp-reconcile-orders --symbol SPY --dry-run
 ```
 
 `mcp-orders` calls `get_equity_orders` only. It does not place, cancel, or
 review orders.
+
+`mcp-reconcile-orders` also stays read-only against Robinhood. Without
+`--dry-run`, it appends `broker_reconciliation` events to the journal for
+matching broker execution rows.
 
 Persistent paper session:
 

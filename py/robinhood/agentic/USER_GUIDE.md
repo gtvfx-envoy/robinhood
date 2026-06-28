@@ -284,6 +284,13 @@ python -m robinhood.agentic.cli mcp-orders --symbol SPY --limit 5
 python -m robinhood.agentic.cli mcp-orders --order-id <broker-order-id>
 ```
 
+Append read-only status snapshots for broker execution journal rows:
+
+```powershell
+python -m robinhood.agentic.cli mcp-reconcile-orders --symbol SPY --dry-run
+python -m robinhood.agentic.cli mcp-reconcile-orders --symbol SPY
+```
+
 For MCP diagnostics, list available tools:
 
 ```powershell

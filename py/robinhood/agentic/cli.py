@@ -11,7 +11,7 @@ import sys
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
-from .broker import AccountSnapshot, OrderIntent, OrderReview
+from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
 from .config import AgenticConfig, LIVE_ORDER_CONFIRMATION, get_personal_config_path, load_config
 from .journal import DecisionJournal
 from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
@@ -83,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_orders.add_argument("--limit", type=int, default=10, help="Maximum summarized orders to print.")
     mcp_orders.add_argument("--json", action="store_true", help="Print raw order payload as JSON.")
     _add_common_args(mcp_orders)
+
+    mcp_reconcile = subparsers.add_parser(
+        "mcp-reconcile-orders",
+        help="Append read-only order reconciliation events for broker journal rows.",
+    )
+    mcp_reconcile.add_argument("--symbol", help="Only reconcile one symbol.")
+    mcp_reconcile.add_argument("--limit", type=int, default=20, help="Maximum journal executions to scan.")
+    mcp_reconcile.add_argument("--dry-run", action="store_true", help="Print matches without appending events.")
+    _add_common_args(mcp_reconcile)
 
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
@@ -360,14 +369,16 @@ def main() -> int:
             print("No order submitted: mcp-place-once readiness failed")
             return 1
 
+        client = _build_mcp_client(config)
         broker = AgenticMcpEquityBroker(
             account_number=config.account_number,
-            client=_build_mcp_client(config),
+            client=client,
             live_trading_enabled=_live_order_gates_enabled(config),
             auto_place_orders=config.auto_place_orders,
             max_live_order_dollars=config.risk.max_trade_dollars,
         )
         result = broker.place_order(intent, price=100.0)
+        result = _reconcile_order_result(config.account_number, client, result)
         _journal_place_once(config, result)
         print(
             f"order_status={result.status} placed={result.placed} "
@@ -421,6 +432,28 @@ def main() -> int:
             print(f"... {len(orders) - limit} more orders omitted; rerun with --limit {len(orders)} or --json")
         return 0
 
+    if args.command == "mcp-reconcile-orders":
+        if not config.account_number:
+            raise SystemExit("mcp-reconcile-orders requires account_number in personal config")
+        client = _build_mcp_client(config)
+        rows = _read_journal_rows(config.journal_path)
+        events = _reconcile_journal_rows(
+            account_number=config.account_number,
+            client=client,
+            rows=rows,
+            symbol=args.symbol,
+            limit=args.limit,
+        )
+        print(f"reconciled={len(events)} dry_run={args.dry_run}")
+        for event in events:
+            order = event.get("order", {})
+            _print_console_safe(_format_order_row(order) if isinstance(order, dict) else str(order))
+        if not args.dry_run:
+            journal = DecisionJournal(Path(config.journal_path))
+            for event in events:
+                journal.append_event(event)
+        return 0
+
     quote = ManualQuoteProvider(args.price, args.previous_close).get_quote(args.symbol.strip().upper())
     entry = bot.analyze(quote)
 
@@ -454,6 +487,9 @@ def _build_review_only_mcp_broker(config) -> AgenticMcpEquityBroker:
 
 def _journal_place_once(config: AgenticConfig, result) -> None:
     journal = DecisionJournal(Path(config.journal_path))
+    execution = _execution_payload(result)
+    if isinstance(result.raw, dict) and isinstance(result.raw.get("reconciled_order"), dict):
+        execution["reconciliation"] = _order_status_payload(result.raw["reconciled_order"])
     journal.append_event(
         {
             "event_type": "broker_execution",
@@ -461,7 +497,7 @@ def _journal_place_once(config: AgenticConfig, result) -> None:
             "dry_run": config.dry_run,
             "symbol": result.intent.symbol,
             "action": result.intent.side.upper(),
-            "execution": _execution_payload(result),
+            "execution": execution,
         }
     )
 
@@ -574,6 +610,168 @@ def _mcp_orders_arguments(account_number: str, args) -> dict[str, str]:
     return arguments
 
 
+def _reconcile_order_result(account_number: str, client, result: OrderResult) -> OrderResult:
+    if not result.placed or result.order_id:
+        return result
+
+    order = _find_matching_equity_order(account_number, client, result.intent, result.timestamp)
+    if not order:
+        return result
+
+    raw = {"placement": result.raw, "reconciled_order": order}
+    return replace(
+        result,
+        order_id=str(_first_present(order, "id", "order_id") or ""),
+        status=str(_first_present(order, "state", "status") or result.status),
+        filled_quantity=_float_or_default(
+            _first_present(order, "filled_quantity", "cumulative_quantity", "executed_quantity"),
+            result.filled_quantity,
+        ),
+        average_price=_float_or_default(
+            _first_present(order, "average_price", "executed_price"),
+            result.average_price,
+        ),
+        raw=raw,
+    )
+
+
+def _find_matching_equity_order(
+    account_number: str,
+    client,
+    intent: OrderIntent,
+    created_at_gte: str | None = None,
+) -> dict | None:
+    arguments = {
+        "account_number": account_number,
+        "symbol": intent.symbol,
+        "placed_agent": "agentic",
+    }
+    if created_at_gte:
+        arguments["created_at_gte"] = str(created_at_gte).split("T", 1)[0]
+    payload = client.call_tool("get_equity_orders", arguments)
+    for order in _extract_order_rows(payload):
+        if _order_matches_intent(order, intent):
+            return order
+    return None
+
+
+def _order_matches_intent(order: dict, intent: OrderIntent) -> bool:
+    if str(_first_present(order, "symbol", "instrument_symbol") or "").upper() != intent.symbol:
+        return False
+    if str(_first_present(order, "side") or "").lower() != intent.side:
+        return False
+    order_type = str(_first_present(order, "type", "order_type") or "").lower()
+    if order_type and order_type != intent.order_type:
+        return False
+    if intent.dollar_amount is not None:
+        dollars = _float_or_none(
+            _first_present(order, "dollar_amount", "notional", "amount")
+            or _get_nested(order, "dollar_based_amount", "amount")
+        )
+        return dollars is not None and abs(dollars - intent.dollar_amount) < 0.01
+    if intent.quantity is not None:
+        quantity = _float_or_none(_first_present(order, "quantity", "shares"))
+        return quantity is not None and abs(quantity - intent.quantity) < 0.000001
+    return False
+
+
+def _read_journal_rows(path: str | Path) -> list[dict]:
+    journal_path = Path(path)
+    if not journal_path.exists():
+        return []
+    rows: list[dict] = []
+    for line in journal_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _reconcile_journal_rows(
+    account_number: str,
+    client,
+    rows: list[dict],
+    symbol: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    events: list[dict] = []
+    wanted_symbol = symbol.upper() if symbol else None
+    executions = [
+        row
+        for row in rows
+        if row.get("event_type") == "broker_execution"
+        and isinstance(row.get("execution"), dict)
+        and row["execution"].get("placed") is True
+    ]
+    for row in reversed(executions):
+        if len(events) >= max(0, limit):
+            break
+        if wanted_symbol and str(row.get("symbol", "")).upper() != wanted_symbol:
+            continue
+        execution = row["execution"]
+        order = None
+        order_id = execution.get("order_id")
+        if order_id:
+            order = _fetch_equity_order(account_number, client, str(order_id))
+        if order is None:
+            intent = _intent_from_payload(execution.get("order_intent"))
+            if intent is not None:
+                order = _find_matching_equity_order(
+                    account_number,
+                    client,
+                    intent,
+                    str(row.get("timestamp") or ""),
+                )
+        if not order:
+            continue
+        events.append(
+            {
+                "event_type": "broker_reconciliation",
+                "source": "mcp-reconcile-orders",
+                "execution_timestamp": row.get("timestamp"),
+                "dry_run": row.get("dry_run"),
+                "symbol": order.get("symbol") or row.get("symbol"),
+                "action": str(order.get("side") or row.get("action") or "").upper(),
+                "order_id": _first_present(order, "id", "order_id"),
+                "broker_status": _first_present(order, "state", "status"),
+                "order": _order_status_payload(order),
+            }
+        )
+    return events
+
+
+def _fetch_equity_order(account_number: str, client, order_id: str) -> dict | None:
+    payload = client.call_tool(
+        "get_equity_orders",
+        {"account_number": account_number, "order_id": order_id},
+    )
+    rows = _extract_order_rows(payload)
+    return rows[0] if rows else None
+
+
+def _intent_from_payload(payload) -> OrderIntent | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return OrderIntent(
+            symbol=str(payload["symbol"]),
+            side=str(payload["side"]),
+            order_type=str(payload.get("type") or "market"),
+            dollar_amount=_float_or_none(payload.get("dollar_amount")),
+            quantity=_float_or_none(payload.get("quantity")),
+            limit_price=_float_or_none(payload.get("limit_price")),
+            market_hours=str(payload.get("market_hours") or "regular_hours"),
+            time_in_force=str(payload.get("time_in_force") or "gfd"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _extract_order_rows(payload) -> list[dict]:
     if isinstance(payload, dict):
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
@@ -586,6 +784,30 @@ def _extract_order_rows(payload) -> list[dict]:
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
     return []
+
+
+def _order_status_payload(order: dict) -> dict[str, object]:
+    return {
+        "order_id": _first_present(order, "id", "order_id"),
+        "symbol": _first_present(order, "symbol", "instrument_symbol"),
+        "side": _first_present(order, "side"),
+        "type": _first_present(order, "type", "order_type"),
+        "state": _first_present(order, "state", "status"),
+        "quantity": _first_present(order, "quantity", "shares"),
+        "filled_quantity": _first_present(
+            order,
+            "filled_quantity",
+            "cumulative_quantity",
+            "executed_quantity",
+        ),
+        "dollar_amount": (
+            _first_present(order, "dollar_amount", "notional", "amount")
+            or _get_nested(order, "dollar_based_amount", "amount")
+        ),
+        "average_price": _first_present(order, "average_price", "executed_price"),
+        "last_transaction_at": _first_present(order, "last_transaction_at", "created_at", "created"),
+        "placed_agent": _first_present(order, "placed_agent"),
+    }
 
 
 def _format_order_row(order: dict) -> str:
@@ -624,6 +846,18 @@ def _get_nested(payload: dict, *keys: str):
             return None
         value = value.get(key)
     return value if value not in (None, "") else None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_default(value, default):
+    parsed = _float_or_none(value)
+    return default if parsed is None else parsed
 
 
 def _print_console_safe(value: str) -> None:

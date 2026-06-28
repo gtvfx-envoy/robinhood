@@ -15,6 +15,8 @@ from robinhood.agentic.cli import (
     _live_readiness_failures,
     _mcp_orders_arguments,
     _mcp_review_intent,
+    _reconcile_journal_rows,
+    _reconcile_order_result,
     build_parser,
 )
 from robinhood.agentic.config import (
@@ -274,6 +276,13 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.symbol, "spy")
         self.assertEqual(args.state, "queued")
         self.assertEqual(args.placed_agent, "agentic")
+
+    def test_mcp_reconcile_orders_parser_defaults_to_append(self):
+        args = build_parser().parse_args(["mcp-reconcile-orders", "--symbol", "spy"])
+
+        self.assertEqual(args.command, "mcp-reconcile-orders")
+        self.assertEqual(args.symbol, "spy")
+        self.assertFalse(args.dry_run)
 
     def test_mcp_review_intent_validates_dollars(self):
         intent = _mcp_review_intent("spy", 1.234)
@@ -982,6 +991,91 @@ class AgenticBotTests(unittest.TestCase):
         self.assertIn("SPY buy market state=queued", summary)
         self.assertIn("dollars=1.00", summary)
         self.assertIn("id=order-1", summary)
+
+    def test_reconcile_order_result_recovers_missing_order_id(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "order-1",
+                                "symbol": "SPY",
+                                "side": "buy",
+                                "type": "market",
+                                "state": "queued",
+                                "dollar_based_amount": {"amount": "1.00"},
+                                "cumulative_quantity": "0.000000",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        result = OrderResult(
+            intent=OrderIntent("SPY", "buy", dollar_amount=1.0),
+            placed=True,
+            status="submitted",
+            reason="mcp order submitted",
+        )
+
+        reconciled = _reconcile_order_result("123", client, result)
+
+        self.assertEqual(reconciled.order_id, "order-1")
+        self.assertEqual(reconciled.status, "queued")
+        self.assertEqual(reconciled.filled_quantity, 0.0)
+        self.assertIn("reconciled_order", reconciled.raw)
+
+    def test_reconcile_journal_rows_appends_status_event(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "order-1",
+                                "symbol": "SPY",
+                                "side": "buy",
+                                "type": "market",
+                                "state": "filled",
+                                "dollar_based_amount": {"amount": "1.00"},
+                                "cumulative_quantity": "0.001",
+                                "average_price": "100.00",
+                                "placed_agent": "agentic",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        rows = [
+            {
+                "timestamp": "2026-06-28T15:33:39+00:00",
+                "event_type": "broker_execution",
+                "dry_run": False,
+                "symbol": "SPY",
+                "action": "BUY",
+                "execution": {
+                    "placed": True,
+                    "order_id": "",
+                    "order_intent": {
+                        "symbol": "SPY",
+                        "side": "buy",
+                        "type": "market",
+                        "dollar_amount": 1.0,
+                        "quantity": None,
+                        "limit_price": None,
+                    },
+                },
+            }
+        ]
+
+        events = _reconcile_journal_rows("123", client, rows)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "broker_reconciliation")
+        self.assertEqual(events[0]["order_id"], "order-1")
+        self.assertEqual(events[0]["broker_status"], "filled")
 
     def test_bot_writes_journal_entry(self):
         import tempfile
