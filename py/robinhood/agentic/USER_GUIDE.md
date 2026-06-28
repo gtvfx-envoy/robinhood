@@ -264,6 +264,10 @@ an approved MCP review.
 As a final guard, the live MCP broker adapter also rejects placement when order
 notional exceeds `risk.max_trade_dollars`.
 
+The live broker adapter also has a one-order-per-process fuse. After one live
+order is submitted, later placement attempts in that process are rejected before
+the MCP placement tool is called again.
+
 ## One-Shot Analysis
 
 The `analyze` command still accepts `--price` and `--previous-close` for tests,

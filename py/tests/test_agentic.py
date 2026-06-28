@@ -715,6 +715,54 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(result.order_id, "live-order")
         self.assertIn("place_equity_order", client.calls)
 
+    def test_agentic_mcp_broker_live_order_fuse_allows_one_submission(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {"id": "live-order", "state": "submitted"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        first = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+        second = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertTrue(first.placed)
+        self.assertFalse(second.placed)
+        self.assertEqual(second.status, "rejected")
+        self.assertIn("live order fuse tripped", second.reason)
+        self.assertEqual(client.calls.count("place_equity_order"), 1)
+
+    def test_agentic_mcp_broker_rejects_invalid_live_order_fuse(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {"id": "live-order", "state": "submitted"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_orders_per_process=0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("max_live_orders_per_process", result.reason)
+        self.assertNotIn("place_equity_order", client.calls)
+
     def test_agentic_mcp_broker_rejects_live_buy_above_cap(self):
         client = _FakeMcpClient(
             {

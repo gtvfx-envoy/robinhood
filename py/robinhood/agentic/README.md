@@ -249,6 +249,10 @@ The live MCP broker also receives `risk.max_trade_dollars` as a final
 the broker adapter rejects live placement when the order notional exceeds that
 cap.
 
+Each broker instance also has a one-order live fuse. After one live order is
+submitted in a process, later placement attempts are rejected before calling the
+MCP placement tool.
+
 Persistent paper session:
 
 ```powershell

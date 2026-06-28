@@ -28,6 +28,7 @@ class AgenticMcpEquityBroker(Broker):
         live_trading_enabled: bool = False,
         auto_place_orders: bool = False,
         max_live_order_dollars: float = 0.0,
+        max_live_orders_per_process: int = 1,
     ):
         if not account_number:
             raise ValueError("account_number is required")
@@ -36,6 +37,8 @@ class AgenticMcpEquityBroker(Broker):
         self.live_trading_enabled = live_trading_enabled
         self.auto_place_orders = auto_place_orders
         self.max_live_order_dollars = max_live_order_dollars
+        self.max_live_orders_per_process = max_live_orders_per_process
+        self._live_orders_submitted = 0
 
     def get_account_snapshot(self) -> AccountSnapshot:
         portfolio = _as_mapping(
@@ -122,7 +125,18 @@ class AgenticMcpEquityBroker(Broker):
                 raw=review.raw,
             )
 
+        fuse_reason = self._live_order_fuse_reason()
+        if fuse_reason:
+            return OrderResult(
+                intent=intent,
+                placed=False,
+                status="rejected",
+                reason=fuse_reason,
+                raw=review.raw,
+            )
+
         payload = self.client.call_tool("place_equity_order", self._order_arguments(intent))
+        self._live_orders_submitted += 1
         result = _as_mapping(payload)
         return OrderResult(
             intent=intent,
@@ -165,6 +179,16 @@ class AgenticMcpEquityBroker(Broker):
             return (
                 "live order exceeds max_live_order_dollars "
                 f"(${dollars:.2f} > ${self.max_live_order_dollars:.2f})"
+            )
+        return ""
+
+    def _live_order_fuse_reason(self) -> str:
+        if self.max_live_orders_per_process <= 0:
+            return "max_live_orders_per_process must be greater than 0"
+        if self._live_orders_submitted >= self.max_live_orders_per_process:
+            return (
+                "live order fuse tripped "
+                f"({self._live_orders_submitted}/{self.max_live_orders_per_process} submitted)"
             )
         return ""
 
