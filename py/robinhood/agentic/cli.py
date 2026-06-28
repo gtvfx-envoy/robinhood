@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
+import sys
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
@@ -66,6 +68,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_login = subparsers.add_parser("mcp-login", help="Authorize the standalone Agentic MCP client.")
     _add_common_args(mcp_login)
+
+    mcp_tools = subparsers.add_parser("mcp-tools", help="List available Agentic MCP tools.")
+    mcp_tools.add_argument("--filter", help="Only print tools whose name contains this text.")
+    mcp_tools.add_argument("--json", action="store_true", help="Print full tool metadata as JSON.")
+    _add_common_args(mcp_tools)
+
+    mcp_orders = subparsers.add_parser("mcp-orders", help="Fetch equity order status from MCP.")
+    mcp_orders.add_argument("--symbol", help="Filter to one symbol.")
+    mcp_orders.add_argument("--state", help="Filter to one order state.")
+    mcp_orders.add_argument("--order-id", help="Fetch one order by broker order id.")
+    mcp_orders.add_argument("--created-at-gte", help="Filter to orders created at or after this UTC time/date.")
+    mcp_orders.add_argument("--placed-agent", help="Filter by source, e.g. agentic.")
+    mcp_orders.add_argument("--limit", type=int, default=10, help="Maximum summarized orders to print.")
+    mcp_orders.add_argument("--json", action="store_true", help="Print raw order payload as JSON.")
+    _add_common_args(mcp_orders)
 
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
@@ -372,6 +389,38 @@ def main() -> int:
                 print(f"accounts={len(results)}")
         return 0
 
+    if args.command == "mcp-tools":
+        client = _build_mcp_client(config)
+        tools = client.list_tools()
+        if args.filter:
+            needle = args.filter.strip().lower()
+            tools = [tool for tool in tools if needle in str(tool.get("name", "")).lower()]
+        if args.json:
+            print(json.dumps(tools, indent=2, sort_keys=True))
+        else:
+            for tool in tools:
+                description = tool.get("description") or ""
+                _print_console_safe(f"{tool.get('name', '')}: {description}".rstrip())
+        return 0
+
+    if args.command == "mcp-orders":
+        if not config.account_number:
+            raise SystemExit("mcp-orders requires account_number in personal config")
+        client = _build_mcp_client(config)
+        arguments = _mcp_orders_arguments(config.account_number, args)
+        payload = client.call_tool("get_equity_orders", arguments)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        orders = _extract_order_rows(payload)
+        limit = max(0, args.limit)
+        print(f"orders={len(orders)}")
+        for order in orders[:limit]:
+            _print_console_safe(_format_order_row(order))
+        if len(orders) > limit:
+            print(f"... {len(orders) - limit} more orders omitted; rerun with --limit {len(orders)} or --json")
+        return 0
+
     quote = ManualQuoteProvider(args.price, args.previous_close).get_quote(args.symbol.strip().upper())
     entry = bot.analyze(quote)
 
@@ -506,6 +555,80 @@ def _mcp_token_store_path(config) -> Path:
     if not service_root:
         raise RuntimeError("SERVICE_ROOT must be set for MCP token storage")
     return Path(service_root) / "rh_agentic_mcp_tokens.json"
+
+
+def _mcp_orders_arguments(account_number: str, args) -> dict[str, str]:
+    arguments = {"account_number": account_number}
+    for attr, key in (
+        ("symbol", "symbol"),
+        ("state", "state"),
+        ("order_id", "order_id"),
+        ("created_at_gte", "created_at_gte"),
+        ("placed_agent", "placed_agent"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            arguments[key] = str(value).strip()
+    if "symbol" in arguments:
+        arguments["symbol"] = arguments["symbol"].upper()
+    return arguments
+
+
+def _extract_order_rows(payload) -> list[dict]:
+    if isinstance(payload, dict):
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        for key in ("orders", "results", "equity_orders"):
+            rows = data.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        if any(key in data for key in ("id", "order_id", "state", "status")):
+            return [data]
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    return []
+
+
+def _format_order_row(order: dict) -> str:
+    order_id = _first_present(order, "id", "order_id") or "-"
+    symbol = _first_present(order, "symbol", "instrument_symbol") or "-"
+    side = _first_present(order, "side") or "-"
+    state = _first_present(order, "state", "status") or "-"
+    order_type = _first_present(order, "type", "order_type") or "-"
+    quantity = _first_present(order, "quantity", "shares") or "-"
+    filled = _first_present(order, "filled_quantity", "cumulative_quantity", "executed_quantity") or "-"
+    dollars = (
+        _first_present(order, "dollar_amount", "notional", "amount")
+        or _get_nested(order, "dollar_based_amount", "amount")
+        or "-"
+    )
+    average_price = _first_present(order, "average_price", "executed_price") or "-"
+    created_at = _first_present(order, "last_transaction_at", "created_at", "created") or "-"
+    return (
+        f"{created_at} {symbol} {side} {order_type} state={state} "
+        f"qty={quantity} filled={filled} dollars={dollars} avg={average_price} id={order_id}"
+    )
+
+
+def _first_present(payload: dict, *keys: str):
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _get_nested(payload: dict, *keys: str):
+    value = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value if value not in (None, "") else None
+
+
+def _print_console_safe(value: str) -> None:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(value.encode(encoding, errors="replace").decode(encoding))
 
 
 if __name__ == "__main__":

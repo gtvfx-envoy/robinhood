@@ -263,6 +263,18 @@ python -m robinhood.agentic.cli mcp-place-once --symbol SPY --dollars 1
 `mcp-place-once` runs the same readiness checks, submits at most one order, and
 appends a `broker_execution` audit event to the configured journal.
 
+Inspect live MCP tools or read back equity order status with read-only
+commands:
+
+```powershell
+python -m robinhood.agentic.cli mcp-tools --filter order
+python -m robinhood.agentic.cli mcp-orders --symbol SPY --limit 5
+python -m robinhood.agentic.cli mcp-orders --order-id <broker-order-id>
+```
+
+`mcp-orders` calls `get_equity_orders` only. It does not place, cancel, or
+review orders.
+
 Persistent paper session:
 
 ```powershell

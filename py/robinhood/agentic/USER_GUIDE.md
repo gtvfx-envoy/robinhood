@@ -277,6 +277,19 @@ python -m robinhood.agentic.cli mcp-place-once --symbol SPY --dollars 1
 `mcp-place-once` runs the same readiness checks, submits at most one order, and
 records a `broker_execution` event in the journal.
 
+Read back order state without placing anything:
+
+```powershell
+python -m robinhood.agentic.cli mcp-orders --symbol SPY --limit 5
+python -m robinhood.agentic.cli mcp-orders --order-id <broker-order-id>
+```
+
+For MCP diagnostics, list available tools:
+
+```powershell
+python -m robinhood.agentic.cli mcp-tools --filter order
+```
+
 ## One-Shot Analysis
 
 The `analyze` command still accepts `--price` and `--previous-close` for tests,

@@ -51,6 +51,11 @@ class StreamableHttpMcpToolClient:
 
         return asyncio.run(self._call_tool_async(name, arguments))
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        """List MCP tools exposed by the server."""
+
+        return asyncio.run(self._list_tools_async())
+
     async def _call_tool_async(self, name: str, arguments: dict[str, Any]) -> Any:
         try:
             from mcp import ClientSession
@@ -73,6 +78,29 @@ class StreamableHttpMcpToolClient:
                 await session.initialize()
                 result = await session.call_tool(name, arguments)
                 return decode_mcp_tool_result(result)
+
+    async def _list_tools_async(self) -> list[dict[str, Any]]:
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+        except ImportError as exc:
+            raise McpClientUnavailable(
+                "The optional 'mcp' package is required for Streamable HTTP MCP access. "
+                "Install it with: python -m pip install 'mcp>=1.27,<2'"
+            ) from exc
+
+        auth = self._oauth_auth()
+        headers = self._headers()
+        async with streamablehttp_client(
+            self.url,
+            headers=headers,
+            auth=auth,
+            terminate_on_close=False,
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.list_tools()
+                return decode_mcp_tools_result(result)
 
     def _headers(self) -> dict[str, str]:
         headers = dict(self.headers)
@@ -247,6 +275,37 @@ def decode_mcp_tool_result(result: Any) -> Any:
     if hasattr(result, "content"):
         return _decode_content(result.content)
     return result
+
+
+def decode_mcp_tools_result(result: Any) -> list[dict[str, Any]]:
+    """Decode common MCP SDK list-tools result shapes."""
+
+    tools = getattr(result, "tools", result)
+    if tools is None:
+        return []
+    decoded = []
+    for tool in tools:
+        if hasattr(tool, "model_dump"):
+            payload = tool.model_dump(mode="json")
+        elif isinstance(tool, dict):
+            payload = dict(tool)
+        else:
+            payload = {
+                "name": getattr(tool, "name", ""),
+                "description": getattr(tool, "description", ""),
+                "inputSchema": getattr(tool, "inputSchema", None)
+                or getattr(tool, "input_schema", None),
+            }
+        decoded.append(
+            {
+                "name": str(payload.get("name") or ""),
+                "description": str(payload.get("description") or ""),
+                "input_schema": payload.get("inputSchema")
+                or payload.get("input_schema")
+                or {},
+            }
+        )
+    return decoded
 
 
 def _decode_content(content: Any) -> Any:

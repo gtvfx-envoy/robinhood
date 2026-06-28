@@ -8,9 +8,12 @@ from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend
 from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.cli import (
+    _extract_order_rows,
+    _format_order_row,
     _journal_place_once,
     _live_order_gates_enabled,
     _live_readiness_failures,
+    _mcp_orders_arguments,
     _mcp_review_intent,
     build_parser,
 )
@@ -40,6 +43,7 @@ from robinhood.agentic.mcp_client import (
     JsonTokenStorage,
     StreamableHttpMcpToolClient,
     decode_mcp_tool_result,
+    decode_mcp_tools_result,
 )
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
@@ -253,6 +257,23 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.command, "mcp-place-once")
         self.assertEqual(args.symbol, "spy")
         self.assertEqual(args.dollars, 1.0)
+
+    def test_mcp_tools_parser_defaults_to_text(self):
+        args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
+
+        self.assertEqual(args.command, "mcp-tools")
+        self.assertEqual(args.filter, "order")
+        self.assertFalse(args.json)
+
+    def test_mcp_orders_parser_supports_filters(self):
+        args = build_parser().parse_args(
+            ["mcp-orders", "--symbol", "spy", "--state", "queued", "--placed-agent", "agentic"]
+        )
+
+        self.assertEqual(args.command, "mcp-orders")
+        self.assertEqual(args.symbol, "spy")
+        self.assertEqual(args.state, "queued")
+        self.assertEqual(args.placed_agent, "agentic")
 
     def test_mcp_review_intent_validates_dollars(self):
         intent = _mcp_review_intent("spy", 1.234)
@@ -913,6 +934,54 @@ class AgenticBotTests(unittest.TestCase):
         decoded = decode_mcp_tool_result(Result())
 
         self.assertEqual(decoded["buying_power"], "100.00")
+
+    def test_decode_mcp_tools_result_normalizes_sdk_shapes(self):
+        class Tool:
+            name = "get_equity_orders"
+            description = "List equity orders."
+            inputSchema = {"type": "object"}
+
+        class Result:
+            tools = [Tool(), {"name": "get_order", "input_schema": {"type": "object"}}]
+
+        decoded = decode_mcp_tools_result(Result())
+
+        self.assertEqual(decoded[0]["name"], "get_equity_orders")
+        self.assertEqual(decoded[0]["input_schema"], {"type": "object"})
+        self.assertEqual(decoded[1]["name"], "get_order")
+
+    def test_mcp_orders_arguments_and_summary_are_stable(self):
+        args = build_parser().parse_args(["mcp-orders", "--symbol", "spy", "--state", "queued"])
+
+        self.assertEqual(
+            _mcp_orders_arguments("123", args),
+            {"account_number": "123", "symbol": "SPY", "state": "queued"},
+        )
+
+        rows = _extract_order_rows(
+            {
+                "data": {
+                    "orders": [
+                        {
+                            "id": "order-1",
+                            "symbol": "SPY",
+                            "side": "buy",
+                            "type": "market",
+                            "state": "queued",
+                            "dollar_based_amount": {"amount": "1.00"},
+                            "filled_quantity": "0",
+                            "created_at": "2026-06-28T15:33:39Z",
+                        }
+                    ]
+                }
+            }
+        )
+        summary = _format_order_row(rows[0])
+
+        self.assertEqual(len(rows), 1)
+        self.assertIn("SPY buy market state=queued", summary)
+        self.assertIn("dollars=1.00", summary)
+        self.assertIn("id=order-1", summary)
 
     def test_bot_writes_journal_entry(self):
         import tempfile
