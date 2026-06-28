@@ -237,6 +237,26 @@ python -m robinhood.agentic.cli mcp-check --symbol SPY
 `mcp-check` reviews a $1 buy for the selected symbol and keeps the broker in
 review-only mode.
 
+To review a specific dollar-sized buy without placing it:
+
+```powershell
+python -m robinhood.agentic.cli mcp-review --symbol SPY --dollars 1
+```
+
+`mcp-review` is always review-only and prints account cash, position count,
+review approval, estimated quantity/cost when returned, and review alerts.
+
+To check live-placement readiness without placing an order:
+
+```powershell
+python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
+```
+
+`live-check` returns `FAIL` until every live gate is intentional:
+`broker=agentic_mcp`, `dry_run=false`, `live_trading_enabled=true`,
+`auto_place_orders=true`, coherent risk limits, usable account cash after
+reserve, an allowed symbol, and an approved MCP review.
+
 ## One-Shot Analysis
 
 The `analyze` command still accepts `--price` and `--previous-close` for tests,

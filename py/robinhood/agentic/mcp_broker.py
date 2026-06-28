@@ -83,9 +83,9 @@ class AgenticMcpEquityBroker(Broker):
             intent=intent,
             approved=approved,
             reason="mcp review approved" if approved else "mcp review blocked",
-            estimated_price=_extract_float(review, ("last_trade_price", "price", "estimated_price")),
-            estimated_quantity=_extract_float(review, ("quantity", "estimated_quantity", "estimated_shares")),
-            estimated_cost=_extract_float(review, ("estimated_cost", "notional", "dollar_amount")),
+            estimated_price=_extract_optional_float(review, ("last_trade_price", "price", "estimated_price")),
+            estimated_quantity=_extract_optional_float(review, ("quantity", "estimated_quantity", "estimated_shares")),
+            estimated_cost=_extract_optional_float(review, ("estimated_cost", "notional", "dollar_amount")),
             alerts=alerts,
             raw=payload,
         )
@@ -151,6 +151,11 @@ def _as_mapping(value: Any) -> dict[str, Any]:
 
 
 def _extract_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float:
+    value = _extract_optional_float(payload, keys)
+    return value if value is not None else 0.0
+
+
+def _extract_optional_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float | None:
     for key in keys:
         value = _get_path(payload, key)
         if value is None:
@@ -159,7 +164,7 @@ def _extract_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float:
             return float(value)
         except (TypeError, ValueError):
             continue
-    return 0.0
+    return None
 
 
 def _get_path(payload: dict[str, Any], path: str) -> Any:

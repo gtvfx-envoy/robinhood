@@ -219,6 +219,28 @@ Review-only connectivity check after login:
 python -m robinhood.agentic.cli mcp-check --symbol SPY
 ```
 
+Review a specific dollar-sized buy without placing it:
+
+```powershell
+python -m robinhood.agentic.cli mcp-review --symbol SPY --dollars 1
+```
+
+`mcp-review` is always review-only. It prints account cash, position count,
+review approval, estimated quantity/cost when returned by MCP, and any review
+alerts.
+
+Check whether the current config is ready for live placement without placing an
+order:
+
+```powershell
+python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
+```
+
+`live-check` is also review-only. It fails unless `broker=agentic_mcp`,
+`dry_run=false`, `live_trading_enabled=true`, `auto_place_orders=true`, risk
+limits are coherent, the account has usable cash after reserve, the symbol is
+allowed, and MCP approves the readiness review.
+
 Persistent paper session:
 
 ```powershell

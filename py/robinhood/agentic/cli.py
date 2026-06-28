@@ -9,8 +9,8 @@ from pathlib import Path
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
-from .broker import OrderIntent
-from .config import get_personal_config_path, load_config
+from .broker import AccountSnapshot, OrderIntent, OrderReview
+from .config import AgenticConfig, get_personal_config_path, load_config
 from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
@@ -47,6 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_check = subparsers.add_parser("mcp-check", help="Check Agentic MCP broker connectivity.")
     mcp_check.add_argument("--symbol", default="SPY", help="Symbol to check tradability for.")
     _add_common_args(mcp_check)
+
+    mcp_review = subparsers.add_parser("mcp-review", help="Review an MCP equity order without placing it.")
+    mcp_review.add_argument("--symbol", default="SPY", help="Symbol to review.")
+    mcp_review.add_argument("--dollars", type=float, default=1.0, help="Dollar amount for buy review.")
+    _add_common_args(mcp_review)
+
+    live_check = subparsers.add_parser("live-check", help="Check live-placement readiness without placing orders.")
+    live_check.add_argument("--symbol", default="SPY", help="Symbol to review for readiness.")
+    live_check.add_argument("--dollars", type=float, default=1.0, help="Dollar amount for readiness review.")
+    _add_common_args(live_check)
 
     mcp_login = subparsers.add_parser("mcp-login", help="Authorize the standalone Agentic MCP client.")
     _add_common_args(mcp_login)
@@ -243,13 +253,7 @@ def main() -> int:
     if args.command == "mcp-check":
         if not config.account_number:
             raise SystemExit("mcp-check requires account_number in personal config")
-        client = _build_mcp_client(config)
-        broker = AgenticMcpEquityBroker(
-            account_number=config.account_number,
-            client=client,
-            live_trading_enabled=False,
-            auto_place_orders=False,
-        )
+        broker = _build_review_only_mcp_broker(config)
         snapshot = broker.get_account_snapshot()
         intent = broker.review_order(_mcp_check_intent(args.symbol), price=100.0)
         print(
@@ -260,6 +264,57 @@ def main() -> int:
         )
         if intent.alerts:
             print(f"review_alerts={list(intent.alerts)}")
+        return 0
+
+    if args.command == "mcp-review":
+        if not config.account_number:
+            raise SystemExit("mcp-review requires account_number in personal config")
+        intent = _mcp_review_intent(args.symbol, args.dollars)
+        broker = _build_review_only_mcp_broker(config)
+        snapshot = broker.get_account_snapshot()
+        review = broker.review_order(intent, price=100.0)
+        print(
+            f"account_cash=${snapshot.cash:.2f} "
+            f"positions={len(snapshot.positions)} "
+            f"symbol={intent.symbol} "
+            f"side={intent.side} "
+            f"dollars=${intent.dollar_amount:.2f} "
+            f"review_approved={review.approved} "
+            f"review_reason={review.reason}"
+        )
+        if review.estimated_quantity is not None:
+            print(f"estimated_quantity={review.estimated_quantity:.6f}")
+        if review.estimated_cost is not None:
+            print(f"estimated_cost=${review.estimated_cost:.2f}")
+        if review.alerts:
+            print(f"review_alerts={list(review.alerts)}")
+        print("No order submitted: mcp-review is review-only")
+        return 0
+
+    if args.command == "live-check":
+        if not config.account_number:
+            raise SystemExit("live-check requires account_number in personal config")
+        intent = _mcp_review_intent(args.symbol, args.dollars)
+        broker = _build_review_only_mcp_broker(config)
+        snapshot = broker.get_account_snapshot()
+        review = broker.review_order(intent, price=100.0)
+        failures = _live_readiness_failures(config, snapshot, review, intent)
+        print(
+            f"readiness={'PASS' if not failures else 'FAIL'} "
+            f"account_cash=${snapshot.cash:.2f} "
+            f"positions={len(snapshot.positions)} "
+            f"symbol={intent.symbol} "
+            f"dollars=${intent.dollar_amount:.2f} "
+            f"review_approved={review.approved}"
+        )
+        if review.alerts:
+            print(f"review_alerts={list(review.alerts)}")
+        if failures:
+            for failure in failures:
+                print(f"FAIL: {failure}")
+            print("No order submitted: live-check is readiness-only")
+            return 1
+        print("No order submitted: live-check is readiness-only")
         return 0
 
     if args.command == "mcp-login":
@@ -287,6 +342,82 @@ def main() -> int:
 
 def _mcp_check_intent(symbol: str) -> OrderIntent:
     return OrderIntent(symbol=symbol, side="buy", dollar_amount=1.0)
+
+
+def _mcp_review_intent(symbol: str, dollars: float) -> OrderIntent:
+    if dollars <= 0:
+        raise SystemExit("mcp-review requires --dollars greater than 0")
+    return OrderIntent(symbol=symbol, side="buy", dollar_amount=round(dollars, 2))
+
+
+def _build_review_only_mcp_broker(config) -> AgenticMcpEquityBroker:
+    return AgenticMcpEquityBroker(
+        account_number=config.account_number,
+        client=_build_mcp_client(config),
+        live_trading_enabled=False,
+        auto_place_orders=False,
+    )
+
+
+def _live_readiness_failures(
+    config: AgenticConfig,
+    snapshot: AccountSnapshot,
+    review: OrderReview,
+    intent: OrderIntent,
+) -> list[str]:
+    failures: list[str] = []
+    broker_name = config.broker.strip().lower()
+    risk = config.risk
+
+    if broker_name != "agentic_mcp":
+        failures.append("broker must be agentic_mcp")
+    if config.dry_run:
+        failures.append("dry_run must be false")
+    if not config.live_trading_enabled:
+        failures.append("live_trading_enabled must be true")
+    if not config.auto_place_orders:
+        failures.append("auto_place_orders must be true")
+
+    allowed_symbols = set(config.symbols.stocks) | set(config.symbols.crypto)
+    if not allowed_symbols:
+        failures.append("at least one allowed symbol is required")
+    if intent.symbol not in allowed_symbols:
+        failures.append(f"{intent.symbol} must be in allowed symbols")
+
+    if risk.allow_shorts:
+        failures.append("allow_shorts must be false")
+    if risk.allow_options:
+        failures.append("allow_options must be false")
+    if risk.min_order_dollars <= 0:
+        failures.append("min_order_dollars must be greater than 0")
+    if risk.max_trade_dollars <= 0:
+        failures.append("max_trade_dollars must be greater than 0")
+    if risk.max_trade_dollars < risk.min_order_dollars:
+        failures.append("max_trade_dollars must be at least min_order_dollars")
+    if risk.max_daily_trades <= 0:
+        failures.append("max_daily_trades must be greater than 0")
+    if risk.max_new_buys_per_day <= 0:
+        failures.append("max_new_buys_per_day must be greater than 0")
+    if risk.max_open_positions <= 0:
+        failures.append("max_open_positions must be greater than 0")
+    if risk.max_total_exposure_dollars > 0 and risk.max_total_exposure_dollars < risk.min_order_dollars:
+        failures.append("max_total_exposure_dollars must be 0 or at least min_order_dollars")
+
+    if intent.dollar_amount is not None and intent.dollar_amount > risk.max_trade_dollars:
+        failures.append("review dollars exceed max_trade_dollars")
+    if intent.dollar_amount is not None and intent.dollar_amount < risk.min_order_dollars:
+        failures.append("review dollars are below min_order_dollars")
+
+    if snapshot.cash <= 0:
+        failures.append("account cash must be greater than 0")
+    if max(0.0, snapshot.cash - risk.min_cash_reserve) < risk.min_order_dollars:
+        failures.append("cash available after min_cash_reserve is below min_order_dollars")
+
+    if not review.approved:
+        failures.append(f"MCP review must approve the readiness order: {review.reason}")
+    if review.alerts:
+        failures.append("MCP review returned alerts")
+    return failures
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

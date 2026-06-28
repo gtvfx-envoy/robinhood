@@ -5,8 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
-from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, PaperBroker
+from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker
 from robinhood.agentic.bot import AgenticBot
+from robinhood.agentic.cli import _live_readiness_failures, _mcp_review_intent, build_parser
 from robinhood.agentic.config import (
     AgenticConfig,
     LaneConfig,
@@ -220,6 +221,75 @@ class AgenticBotTests(unittest.TestCase):
                 os.environ["SERVICE_ROOT"] = old_value
 
         self.assertEqual(path, Path("R:/service") / "rh_agentic.json")
+
+    def test_mcp_review_parser_defaults(self):
+        args = build_parser().parse_args(["mcp-review"])
+
+        self.assertEqual(args.command, "mcp-review")
+        self.assertEqual(args.symbol, "SPY")
+        self.assertEqual(args.dollars, 1.0)
+
+    def test_live_check_parser_defaults(self):
+        args = build_parser().parse_args(["live-check"])
+
+        self.assertEqual(args.command, "live-check")
+        self.assertEqual(args.symbol, "SPY")
+        self.assertEqual(args.dollars, 1.0)
+
+    def test_mcp_review_intent_validates_dollars(self):
+        intent = _mcp_review_intent("spy", 1.234)
+
+        self.assertEqual(intent.symbol, "SPY")
+        self.assertEqual(intent.side, "buy")
+        self.assertEqual(intent.dollar_amount, 1.23)
+        with self.assertRaisesRegex(SystemExit, "greater than 0"):
+            _mcp_review_intent("SPY", 0)
+
+    def test_live_readiness_fails_when_live_gates_disabled(self):
+        intent = OrderIntent("SPY", "buy", dollar_amount=1.0)
+        failures = _live_readiness_failures(
+            AgenticConfig(
+                broker="paper",
+                dry_run=True,
+                live_trading_enabled=False,
+                auto_place_orders=False,
+                symbols=SymbolConfig(stocks=("SPY",)),
+            ),
+            AccountSnapshot(cash=100.0),
+            OrderReview(intent, approved=True, reason="approved"),
+            intent,
+        )
+
+        self.assertIn("broker must be agentic_mcp", failures)
+        self.assertIn("dry_run must be false", failures)
+        self.assertIn("live_trading_enabled must be true", failures)
+        self.assertIn("auto_place_orders must be true", failures)
+
+    def test_live_readiness_passes_for_strict_live_config(self):
+        intent = OrderIntent("SPY", "buy", dollar_amount=1.0)
+        failures = _live_readiness_failures(
+            AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                live_trading_enabled=True,
+                auto_place_orders=True,
+                symbols=SymbolConfig(stocks=("SPY",)),
+                risk=RiskConfig(
+                    min_order_dollars=1.0,
+                    max_trade_dollars=10.0,
+                    max_daily_trades=1,
+                    max_new_buys_per_day=1,
+                    max_open_positions=1,
+                    min_cash_reserve=50.0,
+                    max_total_exposure_dollars=25.0,
+                ),
+            ),
+            AccountSnapshot(cash=100.0),
+            OrderReview(intent, approved=True, reason="approved"),
+            intent,
+        )
+
+        self.assertEqual(failures, [])
 
     def test_strategy_buys_on_positive_momentum(self):
         strategy = SimpleMomentumStrategy(buy_threshold_pct=1.0, target_dollars=10.0)
@@ -574,6 +644,22 @@ class AgenticBotTests(unittest.TestCase):
                 "dollar_amount": "10.00",
             },
         )
+
+    def test_agentic_mcp_broker_missing_review_estimates_are_none(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved"},
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        review = broker.review_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        self.assertTrue(review.approved)
+        self.assertIsNone(review.estimated_price)
+        self.assertIsNone(review.estimated_quantity)
+        self.assertIsNone(review.estimated_cost)
 
     def test_agentic_mcp_broker_places_when_live_gates_enabled(self):
         client = _FakeMcpClient(
