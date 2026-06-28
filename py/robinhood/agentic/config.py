@@ -11,6 +11,7 @@ from typing import Any
 
 DEFAULT_SYMBOLS_PATH = Path(__file__).parent / "config" / "symbols.cfg"
 PERSONAL_CONFIG_FILENAME = "rh_agentic.json"
+LIVE_ORDER_CONFIRMATION = "I_UNDERSTAND_THIS_CAN_PLACE_REAL_ORDERS"
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class PersonalConfig:
     dry_run: bool = True
     live_trading_enabled: bool = False
     auto_place_orders: bool = False
+    live_order_confirm: str = ""
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     poll_seconds: float = 60.0
@@ -81,6 +83,7 @@ class AgenticConfig:
     dry_run: bool = True
     live_trading_enabled: bool = False
     auto_place_orders: bool = False
+    live_order_confirm: str = ""
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     poll_seconds: float = 60.0
@@ -137,6 +140,7 @@ def load_config(
         dry_run=personal.dry_run,
         live_trading_enabled=personal.live_trading_enabled,
         auto_place_orders=personal.auto_place_orders,
+        live_order_confirm=personal.live_order_confirm,
         journal_path=personal.journal_path,
         quote_source_path=personal.quote_source_path,
         poll_seconds=personal.poll_seconds,
@@ -167,6 +171,7 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
         mcp_oauth_scope=str(payload.get("mcp_oauth_scope", "")),
         live_trading_enabled=bool(payload.get("live_trading_enabled", False)),
         auto_place_orders=bool(payload.get("auto_place_orders", False)),
+        live_order_confirm=str(payload.get("live_order_confirm", "")),
         journal_path=str(payload.get("journal_path", "logs/agentic_decisions.jsonl")),
         quote_source_path=str(payload.get("quote_source_path", "")),
         poll_seconds=float(payload.get("poll_seconds", 60.0)),

@@ -10,7 +10,7 @@ from pathlib import Path
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderReview
-from .config import AgenticConfig, get_personal_config_path, load_config
+from .config import AgenticConfig, LIVE_ORDER_CONFIRMATION, get_personal_config_path, load_config
 from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
@@ -130,7 +130,7 @@ def main() -> int:
             broker = AgenticMcpEquityBroker(
                 account_number=config.account_number,
                 client=_build_mcp_client(config),
-                live_trading_enabled=config.live_trading_enabled and not config.dry_run,
+                live_trading_enabled=_live_order_gates_enabled(config),
                 auto_place_orders=config.auto_place_orders,
             )
             session = BrokerSession(
@@ -377,6 +377,8 @@ def _live_readiness_failures(
         failures.append("live_trading_enabled must be true")
     if not config.auto_place_orders:
         failures.append("auto_place_orders must be true")
+    if config.live_order_confirm != LIVE_ORDER_CONFIRMATION:
+        failures.append("live_order_confirm must match required confirmation phrase")
 
     allowed_symbols = set(config.symbols.stocks) | set(config.symbols.crypto)
     if not allowed_symbols:
@@ -418,6 +420,15 @@ def _live_readiness_failures(
     if review.alerts:
         failures.append("MCP review returned alerts")
     return failures
+
+
+def _live_order_gates_enabled(config: AgenticConfig) -> bool:
+    return (
+        not config.dry_run
+        and config.live_trading_enabled
+        and config.auto_place_orders
+        and config.live_order_confirm == LIVE_ORDER_CONFIRMATION
+    )
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

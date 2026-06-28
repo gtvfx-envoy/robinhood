@@ -73,6 +73,7 @@ For a $100 cash account, use conservative risk settings in
   "broker": "paper",
   "live_trading_enabled": false,
   "auto_place_orders": false,
+  "live_order_confirm": "",
   "paper_starting_cash": 100.0,
   "risk": {
     "min_order_dollars": 1.0,
@@ -90,8 +91,10 @@ For a $100 cash account, use conservative risk settings in
 
 For future unattended live trading through the Robinhood Agentic MCP account,
 `broker` must be `agentic_mcp`, `dry_run` must be `false`, and both
-`live_trading_enabled` and `auto_place_orders` must be `true`. Keep any gate
-disabled for review-only mode.
+`live_trading_enabled` and `auto_place_orders` must be `true`.
+`live_order_confirm` must also match the exact phrase
+`I_UNDERSTAND_THIS_CAN_PLACE_REAL_ORDERS`. Keep any gate disabled for
+review-only mode.
 Standalone MCP access also requires the optional MCP SDK:
 
 ```powershell
@@ -254,8 +257,9 @@ python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
 
 `live-check` returns `FAIL` until every live gate is intentional:
 `broker=agentic_mcp`, `dry_run=false`, `live_trading_enabled=true`,
-`auto_place_orders=true`, coherent risk limits, usable account cash after
-reserve, an allowed symbol, and an approved MCP review.
+`auto_place_orders=true`, the exact `live_order_confirm` phrase is present,
+coherent risk limits, usable account cash after reserve, an allowed symbol, and
+an approved MCP review.
 
 ## One-Shot Analysis
 

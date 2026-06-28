@@ -7,9 +7,10 @@ from unittest.mock import patch
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker
 from robinhood.agentic.bot import AgenticBot
-from robinhood.agentic.cli import _live_readiness_failures, _mcp_review_intent, build_parser
+from robinhood.agentic.cli import _live_order_gates_enabled, _live_readiness_failures, _mcp_review_intent, build_parser
 from robinhood.agentic.config import (
     AgenticConfig,
+    LIVE_ORDER_CONFIRMATION,
     LaneConfig,
     RiskConfig,
     SymbolConfig,
@@ -116,6 +117,7 @@ class AgenticBotTests(unittest.TestCase):
                         "dry_run": True,
                         "live_trading_enabled": False,
                         "auto_place_orders": False,
+                        "live_order_confirm": LIVE_ORDER_CONFIRMATION,
                         "journal_path": "R:/service/agentic_decisions.jsonl",
                         "quote_source_path": "R:/service/rh_quotes.json",
                         "poll_seconds": 30,
@@ -137,6 +139,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertTrue(config.dry_run)
         self.assertFalse(config.live_trading_enabled)
         self.assertFalse(config.auto_place_orders)
+        self.assertEqual(config.live_order_confirm, LIVE_ORDER_CONFIRMATION)
         self.assertEqual(config.journal_path, "R:/service/agentic_decisions.jsonl")
         self.assertEqual(config.quote_source_path, "R:/service/rh_quotes.json")
         self.assertEqual(config.poll_seconds, 30.0)
@@ -158,6 +161,7 @@ class AgenticBotTests(unittest.TestCase):
                         "dry_run": True,
                         "live_trading_enabled": True,
                         "auto_place_orders": True,
+                        "live_order_confirm": LIVE_ORDER_CONFIRMATION,
                         "risk": {"max_trade_dollars": 7, "max_daily_trades": 2},
                     }
                 ),
@@ -170,6 +174,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(config.broker, "paper")
         self.assertTrue(config.live_trading_enabled)
         self.assertTrue(config.auto_place_orders)
+        self.assertEqual(config.live_order_confirm, LIVE_ORDER_CONFIRMATION)
         self.assertEqual(config.symbols.stocks, ("AAPL",))
         self.assertEqual(config.risk.max_trade_dollars, 7.0)
         self.assertEqual(config.risk.max_daily_trades, 2)
@@ -264,6 +269,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertIn("dry_run must be false", failures)
         self.assertIn("live_trading_enabled must be true", failures)
         self.assertIn("auto_place_orders must be true", failures)
+        self.assertIn("live_order_confirm must match required confirmation phrase", failures)
 
     def test_live_readiness_passes_for_strict_live_config(self):
         intent = OrderIntent("SPY", "buy", dollar_amount=1.0)
@@ -273,6 +279,7 @@ class AgenticBotTests(unittest.TestCase):
                 dry_run=False,
                 live_trading_enabled=True,
                 auto_place_orders=True,
+                live_order_confirm=LIVE_ORDER_CONFIRMATION,
                 symbols=SymbolConfig(stocks=("SPY",)),
                 risk=RiskConfig(
                     min_order_dollars=1.0,
@@ -290,6 +297,27 @@ class AgenticBotTests(unittest.TestCase):
         )
 
         self.assertEqual(failures, [])
+
+    def test_live_order_gates_require_confirmation_phrase(self):
+        config = AgenticConfig(
+            broker="agentic_mcp",
+            dry_run=False,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+        )
+
+        self.assertFalse(_live_order_gates_enabled(config))
+        self.assertTrue(
+            _live_order_gates_enabled(
+                AgenticConfig(
+                    broker="agentic_mcp",
+                    dry_run=False,
+                    live_trading_enabled=True,
+                    auto_place_orders=True,
+                    live_order_confirm=LIVE_ORDER_CONFIRMATION,
+                )
+            )
+        )
 
     def test_strategy_buys_on_positive_momentum(self):
         strategy = SimpleMomentumStrategy(buy_threshold_pct=1.0, target_dollars=10.0)

@@ -36,6 +36,7 @@ Example personal config:
   "dry_run": true,
   "live_trading_enabled": false,
   "auto_place_orders": false,
+  "live_order_confirm": "",
   "journal_path": "R:/service/rh_agentic_decisions.jsonl",
   "quote_source_path": "R:/service/rh_quotes.json",
   "poll_seconds": 60.0,
@@ -56,8 +57,9 @@ Example personal config:
 
 For future live trading through the Robinhood Agentic MCP broker, `broker` must
 be `agentic_mcp`, `dry_run` must be `false`, and both `live_trading_enabled` and
-`auto_place_orders` must be set to `true`. Leaving any gate disabled keeps the
-MCP broker in review-only mode.
+`auto_place_orders` must be set to `true`. `live_order_confirm` must also match
+the exact phrase `I_UNDERSTAND_THIS_CAN_PLACE_REAL_ORDERS`. Leaving any gate
+disabled keeps the MCP broker in review-only mode.
 
 Standalone MCP access requires the optional MCP SDK:
 
@@ -237,9 +239,10 @@ python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
 ```
 
 `live-check` is also review-only. It fails unless `broker=agentic_mcp`,
-`dry_run=false`, `live_trading_enabled=true`, `auto_place_orders=true`, risk
-limits are coherent, the account has usable cash after reserve, the symbol is
-allowed, and MCP approves the readiness review.
+`dry_run=false`, `live_trading_enabled=true`, `auto_place_orders=true`, the
+exact `live_order_confirm` phrase is present, risk limits are coherent, the
+account has usable cash after reserve, the symbol is allowed, and MCP approves
+the readiness review.
 
 Persistent paper session:
 
