@@ -785,6 +785,10 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             result = session.run(max_iterations=1)
+            rows = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
 
         self.assertEqual(result.decisions, 1)
         self.assertEqual(result.paper_cash, 100.0)
@@ -792,6 +796,51 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(broker.orders[0].symbol, "AAPL")
         self.assertEqual(broker.orders[0].side, "buy")
         self.assertEqual(broker.orders[0].dollar_amount, 10.0)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["event_type"], "broker_execution")
+        self.assertEqual(rows[1]["decision_timestamp"], rows[0]["timestamp"])
+        self.assertEqual(rows[1]["execution"]["broker_status"], "reviewed")
+        self.assertEqual(rows[1]["execution"]["broker_reason"], "live order placement disabled")
+        self.assertFalse(rows[1]["execution"]["placed"])
+        self.assertEqual(rows[1]["execution"]["order_intent"]["symbol"], "AAPL")
+        self.assertEqual(rows[1]["execution"]["order_intent"]["dollar_amount"], 10.0)
+
+    def test_broker_session_journals_plan_rejection(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            quote_path.write_text(
+                json.dumps({"AAPL": {"price": 102, "previous_close": 100}}),
+                encoding="utf-8",
+            )
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=True,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("AAPL",)),
+                risk=RiskConfig(min_cash_reserve=100.0),
+            )
+            broker = _FakeReviewBroker(cash=100.0)
+            session = BrokerSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(quote_path),
+                broker=broker,
+                show_progress=False,
+            )
+
+            session.run(max_iterations=1)
+            rows = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(len(broker.orders), 0)
+        self.assertEqual(rows[1]["event_type"], "broker_execution")
+        self.assertEqual(rows[1]["execution"]["broker_status"], "planned_rejected")
+        self.assertEqual(rows[1]["execution"]["broker_reason"], "available dollars below minimum order size")
+        self.assertIsNone(rows[1]["execution"]["order_intent"])
 
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile

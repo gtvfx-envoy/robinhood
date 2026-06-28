@@ -47,6 +47,23 @@ class DecisionJournal:
             handle.write("\n")
         return entry
 
+    def append_execution(self, entry: JournalEntry, execution: dict[str, Any]) -> None:
+        """Append a broker execution/review event linked to a decision entry."""
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "broker_execution",
+            "decision_timestamp": entry.timestamp,
+            "dry_run": entry.dry_run,
+            "symbol": entry.decision.get("symbol"),
+            "action": entry.decision.get("action"),
+            "execution": execution,
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_json_safe(event), sort_keys=True))
+            handle.write("\n")
+
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, datetime):

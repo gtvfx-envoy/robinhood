@@ -169,6 +169,13 @@ or:
    MCP review/placement when `broker` is `agentic_mcp`.
 8. Sleep until the next lane is due.
 
+Broker-backed sessions append a second JSONL row for each approved trade
+decision that reaches broker planning. That row has
+`event_type="broker_execution"`, links back to the decision row with
+`decision_timestamp`, and records `broker_status`, `broker_reason`,
+`order_intent`, placement fields, and a compact MCP review summary when
+available.
+
 Each lane controls its own polling cadence in `config/symbols.cfg`.
 The session prints lane poll summaries and a countdown progress bar by default.
 `show_progress=False` or CLI `--quiet` disables the countdown while preserving

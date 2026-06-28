@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import time
 
 from .bot import AgenticBot
-from .broker import Broker
+from .broker import Broker, OrderIntent, OrderResult
 from .config import AgenticConfig, LaneConfig
 from .execution import plan_order_intent
 from .journal import JournalEntry
@@ -261,9 +261,19 @@ class BrokerSession:
         snapshot = self.broker.get_account_snapshot()
         plan = plan_order_intent(decision, snapshot, self.config.risk, price)
         if not plan.approved or plan.intent is None:
+            self.bot.journal.append_execution(
+                entry,
+                {
+                    "broker_status": "planned_rejected",
+                    "broker_reason": plan.reason,
+                    "order_intent": _intent_payload(plan.intent),
+                    "placed": False,
+                },
+            )
             return f"no broker order: {plan.reason}"
 
         result = self.broker.place_order(plan.intent, price)
+        self.bot.journal.append_execution(entry, _execution_payload(result))
         if result.status in {"reviewed", "submitted", "filled"} or result.placed:
             self._daily_trade_count += 1
         return f"broker {result.status}: {result.reason}"
@@ -352,3 +362,61 @@ def _decision_from_entry(entry: JournalEntry) -> Decision:
         reason=str(decision.get("reason") or ""),
         target_dollars=float(decision.get("target_dollars") or 0.0),
     )
+
+
+def _execution_payload(result: OrderResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "broker_status": result.status,
+        "broker_reason": result.reason,
+        "placed": result.placed,
+        "order_id": result.order_id,
+        "filled_quantity": result.filled_quantity,
+        "average_price": result.average_price,
+        "order_intent": _intent_payload(result.intent),
+    }
+    review = _review_summary(result.raw)
+    if review:
+        payload["review"] = review
+    return payload
+
+
+def _intent_payload(intent: OrderIntent | None) -> dict[str, object] | None:
+    if intent is None:
+        return None
+    return {
+        "symbol": intent.symbol,
+        "side": intent.side,
+        "type": intent.order_type,
+        "dollar_amount": intent.dollar_amount,
+        "quantity": intent.quantity,
+        "limit_price": intent.limit_price,
+        "market_hours": intent.market_hours,
+        "time_in_force": intent.time_in_force,
+    }
+
+
+def _review_summary(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        return {}
+
+    summary: dict[str, object] = {}
+    for key in (
+        "status",
+        "state",
+        "estimated_quantity",
+        "estimated_shares",
+        "quantity",
+        "estimated_cost",
+        "notional",
+        "last_trade_price",
+        "estimated_price",
+        "price",
+    ):
+        value = raw.get(key)
+        if value is not None:
+            summary[key] = value
+
+    alerts = raw.get("alerts") or raw.get("pre_trade_alerts") or raw.get("warnings")
+    if alerts:
+        summary["alerts"] = alerts
+    return summary

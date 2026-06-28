@@ -268,3 +268,8 @@ $env:SERVICE_ROOT\rh_agentic_decisions.jsonl
 
 Each line is one JSON decision record with quote, strategy decision, risk result,
 and dry-run flag.
+
+When `broker` is `agentic_mcp`, approved trade decisions also get a linked
+`broker_execution` row. It records the planned order intent, broker status,
+broker reason, placement fields, and a compact MCP review summary when
+available.
