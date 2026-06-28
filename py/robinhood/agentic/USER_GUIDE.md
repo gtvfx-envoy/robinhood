@@ -268,6 +268,15 @@ The live broker adapter also has a one-order-per-process fuse. After one live
 order is submitted, later placement attempts in that process are rejected before
 the MCP placement tool is called again.
 
+For a controlled first live order, use:
+
+```powershell
+python -m robinhood.agentic.cli mcp-place-once --symbol SPY --dollars 1
+```
+
+`mcp-place-once` runs the same readiness checks, submits at most one order, and
+records a `broker_execution` event in the journal.
+
 ## One-Shot Analysis
 
 The `analyze` command still accepts `--price` and `--previous-close` for tests,

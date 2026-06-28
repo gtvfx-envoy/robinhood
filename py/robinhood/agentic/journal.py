@@ -50,8 +50,7 @@ class DecisionJournal:
     def append_execution(self, entry: JournalEntry, execution: dict[str, Any]) -> None:
         """Append a broker execution/review event linked to a decision entry."""
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        event = {
+        self.append_event({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event_type": "broker_execution",
             "decision_timestamp": entry.timestamp,
@@ -59,7 +58,14 @@ class DecisionJournal:
             "symbol": entry.decision.get("symbol"),
             "action": entry.decision.get("action"),
             "execution": execution,
-        }
+        })
+
+    def append_event(self, event: dict[str, Any]) -> None:
+        """Append a raw audit event."""
+
+        event = dict(event)
+        event.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(_json_safe(event), sort_keys=True))
             handle.write("\n")

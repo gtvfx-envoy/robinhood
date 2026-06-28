@@ -7,7 +7,13 @@ from unittest.mock import patch
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker
 from robinhood.agentic.bot import AgenticBot
-from robinhood.agentic.cli import _live_order_gates_enabled, _live_readiness_failures, _mcp_review_intent, build_parser
+from robinhood.agentic.cli import (
+    _journal_place_once,
+    _live_order_gates_enabled,
+    _live_readiness_failures,
+    _mcp_review_intent,
+    build_parser,
+)
 from robinhood.agentic.config import (
     AgenticConfig,
     LIVE_ORDER_CONFIRMATION,
@@ -241,6 +247,13 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.symbol, "SPY")
         self.assertEqual(args.dollars, 1.0)
 
+    def test_mcp_place_once_parser_requires_explicit_order(self):
+        args = build_parser().parse_args(["mcp-place-once", "--symbol", "spy", "--dollars", "1"])
+
+        self.assertEqual(args.command, "mcp-place-once")
+        self.assertEqual(args.symbol, "spy")
+        self.assertEqual(args.dollars, 1.0)
+
     def test_mcp_review_intent_validates_dollars(self):
         intent = _mcp_review_intent("spy", 1.234)
 
@@ -318,6 +331,32 @@ class AgenticBotTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_journal_place_once_writes_execution_event(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(journal_path=str(journal_path), dry_run=False)
+            intent = OrderIntent("SPY", "buy", dollar_amount=1.0)
+            result = OrderResult(
+                intent=intent,
+                placed=True,
+                status="submitted",
+                reason="mcp order submitted",
+                order_id="order-1",
+            )
+
+            _journal_place_once(config, result)
+            row = json.loads(journal_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(row["event_type"], "broker_execution")
+        self.assertEqual(row["source"], "mcp-place-once")
+        self.assertEqual(row["symbol"], "SPY")
+        self.assertEqual(row["action"], "BUY")
+        self.assertEqual(row["execution"]["broker_status"], "submitted")
+        self.assertEqual(row["execution"]["order_id"], "order-1")
+        self.assertIn("timestamp", row)
 
     def test_strategy_buys_on_positive_momentum(self):
         strategy = SimpleMomentumStrategy(buy_threshold_pct=1.0, target_dollars=10.0)

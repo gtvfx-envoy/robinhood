@@ -253,6 +253,16 @@ Each broker instance also has a one-order live fuse. After one live order is
 submitted in a process, later placement attempts are rejected before calling the
 MCP placement tool.
 
+For the first controlled live order, use the explicit one-shot command instead
+of the strategy loop:
+
+```powershell
+python -m robinhood.agentic.cli mcp-place-once --symbol SPY --dollars 1
+```
+
+`mcp-place-once` runs the same readiness checks, submits at most one order, and
+appends a `broker_execution` audit event to the configured journal.
+
 Persistent paper session:
 
 ```powershell

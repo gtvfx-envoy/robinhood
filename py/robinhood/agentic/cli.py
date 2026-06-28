@@ -11,11 +11,12 @@ from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backte
 from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderReview
 from .config import AgenticConfig, LIVE_ORDER_CONFIRMATION, get_personal_config_path, load_config
+from .journal import DecisionJournal
 from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
-from .session import BrokerSession, PaperSession
+from .session import BrokerSession, PaperSession, _execution_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     live_check.add_argument("--symbol", default="SPY", help="Symbol to review for readiness.")
     live_check.add_argument("--dollars", type=float, default=1.0, help="Dollar amount for readiness review.")
     _add_common_args(live_check)
+
+    mcp_place_once = subparsers.add_parser("mcp-place-once", help="Place one live MCP equity order.")
+    mcp_place_once.add_argument("--symbol", required=True, help="Symbol to buy.")
+    mcp_place_once.add_argument("--dollars", type=float, required=True, help="Dollar amount to buy.")
+    _add_common_args(mcp_place_once)
 
     mcp_login = subparsers.add_parser("mcp-login", help="Authorize the standalone Agentic MCP client.")
     _add_common_args(mcp_login)
@@ -318,6 +324,43 @@ def main() -> int:
         print("No order submitted: live-check is readiness-only")
         return 0
 
+    if args.command == "mcp-place-once":
+        if not config.account_number:
+            raise SystemExit("mcp-place-once requires account_number in personal config")
+        intent = _mcp_review_intent(args.symbol, args.dollars)
+        review_broker = _build_review_only_mcp_broker(config)
+        snapshot = review_broker.get_account_snapshot()
+        review = review_broker.review_order(intent, price=100.0)
+        failures = _live_readiness_failures(config, snapshot, review, intent)
+        if failures:
+            print(
+                f"readiness=FAIL account_cash=${snapshot.cash:.2f} "
+                f"positions={len(snapshot.positions)} symbol={intent.symbol} "
+                f"dollars=${intent.dollar_amount:.2f} review_approved={review.approved}"
+            )
+            for failure in failures:
+                print(f"FAIL: {failure}")
+            print("No order submitted: mcp-place-once readiness failed")
+            return 1
+
+        broker = AgenticMcpEquityBroker(
+            account_number=config.account_number,
+            client=_build_mcp_client(config),
+            live_trading_enabled=_live_order_gates_enabled(config),
+            auto_place_orders=config.auto_place_orders,
+            max_live_order_dollars=config.risk.max_trade_dollars,
+        )
+        result = broker.place_order(intent, price=100.0)
+        _journal_place_once(config, result)
+        print(
+            f"order_status={result.status} placed={result.placed} "
+            f"symbol={intent.symbol} dollars=${intent.dollar_amount:.2f} "
+            f"reason={result.reason}"
+        )
+        if result.order_id:
+            print(f"order_id={result.order_id}")
+        return 0 if result.placed else 1
+
     if args.command == "mcp-login":
         client = _build_mcp_client(config)
         payload = client.call_tool("get_accounts", {})
@@ -357,6 +400,20 @@ def _build_review_only_mcp_broker(config) -> AgenticMcpEquityBroker:
         client=_build_mcp_client(config),
         live_trading_enabled=False,
         auto_place_orders=False,
+    )
+
+
+def _journal_place_once(config: AgenticConfig, result) -> None:
+    journal = DecisionJournal(Path(config.journal_path))
+    journal.append_event(
+        {
+            "event_type": "broker_execution",
+            "source": "mcp-place-once",
+            "dry_run": config.dry_run,
+            "symbol": result.intent.symbol,
+            "action": result.intent.side.upper(),
+            "execution": _execution_payload(result),
+        }
     )
 
 
