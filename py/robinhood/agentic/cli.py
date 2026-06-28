@@ -132,6 +132,7 @@ def main() -> int:
                 client=_build_mcp_client(config),
                 live_trading_enabled=_live_order_gates_enabled(config),
                 auto_place_orders=config.auto_place_orders,
+                max_live_order_dollars=config.risk.max_trade_dollars,
             )
             session = BrokerSession(
                 config=config,

@@ -244,6 +244,11 @@ exact `live_order_confirm` phrase is present, risk limits are coherent, the
 account has usable cash after reserve, the symbol is allowed, and MCP approves
 the readiness review.
 
+The live MCP broker also receives `risk.max_trade_dollars` as a final
+`max_live_order_dollars` guard. Even if a future code path bypasses planning,
+the broker adapter rejects live placement when the order notional exceeds that
+cap.
+
 Persistent paper session:
 
 ```powershell

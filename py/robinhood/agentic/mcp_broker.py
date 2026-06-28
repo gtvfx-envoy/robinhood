@@ -27,6 +27,7 @@ class AgenticMcpEquityBroker(Broker):
         client: McpToolClient,
         live_trading_enabled: bool = False,
         auto_place_orders: bool = False,
+        max_live_order_dollars: float = 0.0,
     ):
         if not account_number:
             raise ValueError("account_number is required")
@@ -34,6 +35,7 @@ class AgenticMcpEquityBroker(Broker):
         self.client = client
         self.live_trading_enabled = live_trading_enabled
         self.auto_place_orders = auto_place_orders
+        self.max_live_order_dollars = max_live_order_dollars
 
     def get_account_snapshot(self) -> AccountSnapshot:
         portfolio = _as_mapping(
@@ -110,6 +112,16 @@ class AgenticMcpEquityBroker(Broker):
                 raw=review.raw,
             )
 
+        live_cap_reason = self._live_order_cap_reason(intent, price)
+        if live_cap_reason:
+            return OrderResult(
+                intent=intent,
+                placed=False,
+                status="rejected",
+                reason=live_cap_reason,
+                raw=review.raw,
+            )
+
         payload = self.client.call_tool("place_equity_order", self._order_arguments(intent))
         result = _as_mapping(payload)
         return OrderResult(
@@ -139,6 +151,22 @@ class AgenticMcpEquityBroker(Broker):
         if intent.limit_price is not None:
             arguments["limit_price"] = f"{intent.limit_price:.2f}"
         return arguments
+
+    def _live_order_cap_reason(self, intent: OrderIntent, price: float) -> str:
+        if self.max_live_order_dollars <= 0:
+            return ""
+
+        dollars = intent.dollar_amount
+        if dollars is None and intent.quantity is not None:
+            dollars = intent.quantity * price
+        if dollars is None:
+            return ""
+        if dollars > self.max_live_order_dollars:
+            return (
+                "live order exceeds max_live_order_dollars "
+                f"(${dollars:.2f} > ${self.max_live_order_dollars:.2f})"
+            )
+        return ""
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:

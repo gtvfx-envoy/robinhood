@@ -261,6 +261,9 @@ python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
 coherent risk limits, usable account cash after reserve, an allowed symbol, and
 an approved MCP review.
 
+As a final guard, the live MCP broker adapter also rejects placement when order
+notional exceeds `risk.max_trade_dollars`.
+
 ## One-Shot Analysis
 
 The `analyze` command still accepts `--price` and `--previous-close` for tests,

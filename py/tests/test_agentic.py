@@ -715,6 +715,52 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(result.order_id, "live-order")
         self.assertIn("place_equity_order", client.calls)
 
+    def test_agentic_mcp_broker_rejects_live_buy_above_cap(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved"},
+                "place_equity_order": {"id": "live-order"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=5.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("max_live_order_dollars", result.reason)
+        self.assertNotIn("place_equity_order", client.calls)
+
+    def test_agentic_mcp_broker_rejects_live_quantity_order_above_cap(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved"},
+                "place_equity_order": {"id": "live-order"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=5.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "sell", quantity=0.1), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("max_live_order_dollars", result.reason)
+        self.assertNotIn("place_equity_order", client.calls)
+
     def test_agentic_mcp_broker_blocks_untradable_symbol(self):
         client = _FakeMcpClient(
             {
