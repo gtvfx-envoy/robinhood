@@ -6,5 +6,13 @@
         "alias": [
             "python", "-m", "robinhood.agentic.cli"
         ]
+    },
+    "run_bot": {
+        "environment": [
+            "python"
+        ],
+        "alias": [
+            "python", "-m", "robinhood.agentic.cli", "run_bot"
+        ]
     }
 }
