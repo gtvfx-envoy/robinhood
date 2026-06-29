@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
-from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker
+from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker, Position
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.cli import (
     _extract_order_rows,
@@ -17,6 +17,8 @@ from robinhood.agentic.cli import (
     _mcp_review_intent,
     _reconcile_journal_rows,
     _reconcile_order_result,
+    _run_daily_auto_place_orders,
+    _run_daily_live_trading_enabled,
     build_parser,
 )
 from robinhood.agentic.config import (
@@ -260,12 +262,15 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.symbol, "spy")
         self.assertEqual(args.dollars, 1.0)
 
-    def test_run_daily_parser_requires_candle_file(self):
-        args = build_parser().parse_args(["run-daily", "--candle-file", "candles.json", "--range", "6mo"])
+    def test_run_daily_parser_supports_review_only(self):
+        args = build_parser().parse_args(
+            ["run-daily", "--candle-file", "candles.json", "--range", "6mo", "--review-only"]
+        )
 
         self.assertEqual(args.command, "run-daily")
         self.assertEqual(args.candle_file, Path("candles.json"))
         self.assertEqual(args.range, "6mo")
+        self.assertTrue(args.review_only)
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -368,6 +373,20 @@ class AgenticBotTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_run_daily_review_only_forces_live_controls_off(self):
+        config = AgenticConfig(
+            broker="agentic_mcp",
+            dry_run=False,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            live_order_confirm=LIVE_ORDER_CONFIRMATION,
+        )
+
+        self.assertTrue(_run_daily_live_trading_enabled(config, review_only=False))
+        self.assertTrue(_run_daily_auto_place_orders(config, review_only=False))
+        self.assertFalse(_run_daily_live_trading_enabled(config, review_only=True))
+        self.assertFalse(_run_daily_auto_place_orders(config, review_only=True))
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
@@ -1330,6 +1349,57 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(rows[1]["event_type"], "broker_execution")
         self.assertEqual(rows[1]["execution"]["broker_status"], "reviewed")
 
+    def test_daily_candle_broker_session_prints_portfolio_plan_summary(self):
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=True,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("SPY", "QQQ")),
+                lanes=(
+                    LaneConfig(
+                        "stocks",
+                        symbols=("SPY", "QQQ"),
+                        strategy="daily_trend_follow",
+                        poll_seconds=86400,
+                    ),
+                ),
+                risk=RiskConfig(max_open_positions=1, max_trade_dollars=10.0),
+            )
+            broker = _FakeReviewBroker(
+                cash=100.0,
+                positions={"SPY": Position("SPY", quantity=0.001, average_cost=100.0)},
+            )
+            session = DailyCandleBrokerSession(
+                config=config,
+                candle_collector=CandleCollector(
+                    source=StaticHistoricalMarketDataSource(
+                        {
+                            "SPY": tuple(_daily_candles("SPY", [100] * 60)),
+                            "QQQ": tuple(_daily_candles("QQQ", [100 + index for index in range(60)])),
+                        }
+                    ),
+                    cache_path=cache_path,
+                ),
+                broker=broker,
+            )
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                session.run_once()
+
+        self.assertIn(
+            "[daily-plan] open_positions=SPY buy_signals=QQQ sell_signals=- "
+            "blocked=QQQ:max open positions reached selected=HOLD",
+            output.getvalue(),
+        )
+
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile
 
@@ -1679,12 +1749,13 @@ class _FakeMcpClient:
 
 
 class _FakeReviewBroker:
-    def __init__(self, cash=100.0):
+    def __init__(self, cash=100.0, positions=None):
         self.cash = cash
+        self.positions = dict(positions or {})
         self.orders = []
 
     def get_account_snapshot(self):
-        return AccountSnapshot(cash=self.cash, positions={})
+        return AccountSnapshot(cash=self.cash, positions=dict(self.positions))
 
     def review_order(self, intent, price):
         raise AssertionError("BrokerSession should call place_order for approved intents")

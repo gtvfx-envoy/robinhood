@@ -115,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_daily.add_argument("--candle-file", type=Path, required=True, help="JSON daily candle cache path.")
     run_daily.add_argument("--range", default="1y", help="Yahoo chart range for daily candles.")
+    run_daily.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Force broker review mode for this run, even when live gates are enabled.",
+    )
     _add_common_args(run_daily)
     return parser
 
@@ -218,8 +223,8 @@ def main() -> int:
         broker = AgenticMcpEquityBroker(
             account_number=config.account_number,
             client=_build_mcp_client(config),
-            live_trading_enabled=_live_order_gates_enabled(config),
-            auto_place_orders=config.auto_place_orders,
+            live_trading_enabled=_run_daily_live_trading_enabled(config, args.review_only),
+            auto_place_orders=_run_daily_auto_place_orders(config, args.review_only),
             max_live_order_dollars=config.risk.max_trade_dollars,
         )
         session = DailyCandleBrokerSession(
@@ -617,6 +622,14 @@ def _live_order_gates_enabled(config: AgenticConfig) -> bool:
         and config.auto_place_orders
         and config.live_order_confirm == LIVE_ORDER_CONFIRMATION
     )
+
+
+def _run_daily_live_trading_enabled(config: AgenticConfig, review_only: bool) -> bool:
+    return False if review_only else _live_order_gates_enabled(config)
+
+
+def _run_daily_auto_place_orders(config: AgenticConfig, review_only: bool) -> bool:
+    return False if review_only else config.auto_place_orders
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

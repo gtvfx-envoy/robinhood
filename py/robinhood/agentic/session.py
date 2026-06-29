@@ -28,6 +28,15 @@ class SessionResult:
     interrupted: bool = False
 
 
+@dataclass(frozen=True)
+class DailyPlanItem:
+    symbol: str
+    action: str
+    risk_approved: bool
+    risk_reason: str
+    broker_result: str
+
+
 class PaperSession:
     """Poll quote data, analyze configured symbols, and simulate fills."""
 
@@ -351,6 +360,13 @@ class DailyCandleBrokerSession:
         eligible_lanes = tuple(
             lane for lane in lanes if lane.strategy.strip().lower() in {"daily_trend_follow", "daily_trend"}
         )
+        starting_snapshot = self.broker.get_account_snapshot()
+        starting_positions = tuple(
+            symbol
+            for symbol, position in sorted(starting_snapshot.positions.items())
+            if position.is_open
+        )
+        plan_items: list[DailyPlanItem] = []
 
         for lane in eligible_lanes:
             print(
@@ -391,7 +407,19 @@ class DailyCandleBrokerSession:
                 result = self._apply_broker(entry, candles[-1].close)
                 decision = entry.decision
                 print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {result}")
+                plan_items.append(
+                    DailyPlanItem(
+                        symbol=normalized,
+                        action=str(decision["action"]),
+                        risk_approved=bool(entry.risk["approved"]),
+                        risk_reason=str(entry.risk["reason"]),
+                        broker_result=result,
+                    )
+                )
                 snapshot = self.broker.get_account_snapshot()
+
+        if plan_items:
+            print(_daily_plan_summary_line(starting_positions, plan_items))
 
         snapshot = self.broker.get_account_snapshot()
         return SessionResult(
@@ -538,3 +566,40 @@ def _peak_price(candles: tuple[Candle, ...], entry_price: float | None) -> float
         return None
     recent_high = max((candle.high for candle in candles), default=entry_price)
     return max(entry_price, recent_high)
+
+
+def _daily_plan_summary_line(open_positions: tuple[str, ...], items: list[DailyPlanItem]) -> str:
+    buy_signals = tuple(item.symbol for item in items if item.action == "BUY" and item.risk_approved)
+    sell_signals = tuple(item.symbol for item in items if item.action == "SELL" and item.risk_approved)
+    blocked = tuple(
+        f"{item.symbol}:{_daily_plan_block_reason(item)}"
+        for item in items
+        if item.action in {"BUY", "SELL"} and _daily_plan_block_reason(item)
+    )
+    selected = tuple(
+        f"{item.action}:{item.symbol}"
+        for item in items
+        if item.broker_result.startswith(("broker reviewed:", "broker submitted:", "broker filled:"))
+    )
+    selected_text = ",".join(selected) if selected else "HOLD"
+    return (
+        "[daily-plan] "
+        f"open_positions={_csv_or_dash(open_positions)} "
+        f"buy_signals={_csv_or_dash(buy_signals)} "
+        f"sell_signals={_csv_or_dash(sell_signals)} "
+        f"blocked={_csv_or_dash(blocked)} "
+        f"selected={selected_text}"
+    )
+
+
+def _daily_plan_block_reason(item: DailyPlanItem) -> str:
+    if not item.risk_approved:
+        return item.risk_reason
+    prefix = "no broker order: "
+    if item.broker_result.startswith(prefix):
+        return item.broker_result[len(prefix):]
+    return ""
+
+
+def _csv_or_dash(values: tuple[str, ...]) -> str:
+    return ",".join(values) if values else "-"
