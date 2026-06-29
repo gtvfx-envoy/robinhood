@@ -26,10 +26,10 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Ruff check
-        run: python -m ruff check robinhood\agentic tests\test_agentic.py
+        run: python -m ruff check robinhood/agentic tests/test_agentic.py
 
       - name: Ruff format check
-        run: python -m ruff format --check robinhood\agentic tests\test_agentic.py
+        run: python -m ruff format --check robinhood/agentic tests/test_agentic.py
 
       - name: Unit tests
         run: python -m unittest discover -s tests -p test_agentic.py
