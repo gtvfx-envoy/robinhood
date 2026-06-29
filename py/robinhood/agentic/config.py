@@ -43,6 +43,8 @@ class RiskConfig:
     max_open_positions: int = 2
     min_cash_reserve: float = 0.0
     max_total_exposure_dollars: float = 0.0
+    max_live_order_attempts_per_day: int = 1
+    max_live_notional_per_day: float = 0.0
     allow_shorts: bool = False
     allow_options: bool = False
 
@@ -64,8 +66,11 @@ class PersonalConfig:
     live_order_confirm: str = ""
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
+    daemon_state_path: str = ""
     poll_seconds: float = 60.0
     paper_starting_cash: float = 10000.0
+    pre_open_warmup_minutes: int = 5
+    regular_trading_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -85,8 +90,11 @@ class AgenticConfig:
     live_order_confirm: str = ""
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
+    daemon_state_path: str = ""
     poll_seconds: float = 60.0
     paper_starting_cash: float = 10000.0
+    pre_open_warmup_minutes: int = 5
+    regular_trading_only: bool = True
     symbols: SymbolConfig = field(default_factory=SymbolConfig)
     lanes: tuple[LaneConfig, ...] = ()
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -142,8 +150,11 @@ def load_config(
         live_order_confirm=personal.live_order_confirm,
         journal_path=personal.journal_path,
         quote_source_path=personal.quote_source_path,
+        daemon_state_path=personal.daemon_state_path,
         poll_seconds=personal.poll_seconds,
         paper_starting_cash=personal.paper_starting_cash,
+        pre_open_warmup_minutes=personal.pre_open_warmup_minutes,
+        regular_trading_only=personal.regular_trading_only,
         symbols=symbols,
         lanes=lanes,
         risk=risk,
@@ -169,8 +180,11 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
         live_order_confirm=str(payload.get("live_order_confirm", "")),
         journal_path=str(payload.get("journal_path", "logs/agentic_decisions.jsonl")),
         quote_source_path=str(payload.get("quote_source_path", "")),
+        daemon_state_path=str(payload.get("daemon_state_path", "")),
         poll_seconds=float(payload.get("poll_seconds", 60.0)),
         paper_starting_cash=float(payload.get("paper_starting_cash", 10000.0)),
+        pre_open_warmup_minutes=int(payload.get("pre_open_warmup_minutes", 5)),
+        regular_trading_only=bool(payload.get("regular_trading_only", True)),
     )
 
 
@@ -193,6 +207,10 @@ def load_risk_config(path: Path | str | None = None) -> RiskConfig:
         max_total_exposure_dollars=float(
             payload.get("max_total_exposure_dollars", defaults.max_total_exposure_dollars)
         ),
+        max_live_order_attempts_per_day=int(
+            payload.get("max_live_order_attempts_per_day", defaults.max_live_order_attempts_per_day)
+        ),
+        max_live_notional_per_day=float(payload.get("max_live_notional_per_day", defaults.max_live_notional_per_day)),
         allow_shorts=bool(payload.get("allow_shorts", defaults.allow_shorts)),
         allow_options=bool(payload.get("allow_options", defaults.allow_options)),
     )

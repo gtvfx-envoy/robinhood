@@ -17,7 +17,10 @@ from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backte
 from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
 from .config import LIVE_ORDER_CONFIRMATION, AgenticConfig, get_personal_config_path, load_config
+from .daemon import PersistentDaemon
+from .daemon_state import DaemonStateStore
 from .journal import DecisionJournal
+from .market_clock import MarketClock
 from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
@@ -97,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_reconcile.add_argument("--dry-run", action="store_true", help="Print matches without appending events.")
     _add_common_args(mcp_reconcile)
 
+    market_clock = subparsers.add_parser("market-clock", help="Print current market-clock state.")
+    market_clock.add_argument("--timezone", default="America/New_York", help="Market timezone.")
+    _add_common_args(market_clock)
+
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
     run.add_argument("--poll-seconds", type=float, help="Override configured polling interval.")
@@ -152,12 +159,35 @@ def build_parser() -> argparse.ArgumentParser:
     run_daily_daemon.add_argument("--poll-seconds", type=float, default=60.0, help="Seconds to sleep while waiting.")
     run_daily_daemon.add_argument("--max-iterations", type=int, help="Stop after N daily passes.")
     run_daily_daemon.add_argument(
+        "--rerun-today",
+        action="store_true",
+        help="Ignore today's existing daily_daemon_pass marker and run today once more.",
+    )
+    run_daily_daemon.add_argument(
         "--max-live-order-dollars",
         type=float,
         default=5.0,
         help="Maximum order dollars for daemon-planned live/review orders.",
     )
     _add_common_args(run_daily_daemon)
+
+    run_daemon = subparsers.add_parser(
+        "run-daemon",
+        help="Run the persistent market-aware trading daemon.",
+    )
+    run_daemon.add_argument("--candle-file", type=Path, required=True, help="JSON daily candle cache path.")
+    run_daemon.add_argument("--range", default="1y", help="Yahoo chart range for daily candles.")
+    run_daemon.add_argument("--review-only", action="store_true", help="Force review mode even when live gates are on.")
+    run_daemon.add_argument("--max-iterations", type=int, help="Stop after N daemon loop iterations.")
+    run_daemon.add_argument("--status-only", action="store_true", help="Print daemon clock/state status and exit.")
+    run_daemon.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    run_daemon.add_argument(
+        "--max-live-order-dollars",
+        type=float,
+        default=5.0,
+        help="Maximum order dollars for daemon-planned live/review orders.",
+    )
+    _add_common_args(run_daemon)
     return parser
 
 
@@ -246,6 +276,69 @@ def main() -> int:
             print(f"[summary] paper_positions={open_positions}")
         return 0
 
+    if args.command == "market-clock":
+        clock = MarketClock(
+            timezone=args.timezone,
+            pre_open_warmup_minutes=config.pre_open_warmup_minutes,
+        )
+        status = clock.status()
+        print(
+            "[market-clock] "
+            f"state={status.state} trade_day={status.trade_day or '-'} "
+            f"trading_allowed={status.trading_allowed} warmup_allowed={status.warmup_allowed} "
+            f"now={status.now.isoformat()} next_wakeup={status.next_wakeup.isoformat()} "
+            f"next_open={status.next_open.isoformat()} next_close={status.next_close.isoformat()}"
+        )
+        return 0
+
+    if args.command == "run-daemon":
+        broker_name = config.broker.strip().lower()
+        if broker_name != "agentic_mcp":
+            raise SystemExit("run-daemon requires broker=agentic_mcp in personal config")
+        if not config.account_number:
+            raise SystemExit("run-daemon with agentic_mcp broker requires account_number in personal config")
+        if args.max_live_order_dollars <= 0:
+            raise SystemExit("--max-live-order-dollars must be greater than 0")
+        if config.risk.max_live_order_attempts_per_day <= 0:
+            raise SystemExit("risk.max_live_order_attempts_per_day must be greater than 0")
+
+        daemon_config = replace(config, journal_path=str(args.journal)) if args.journal else config
+        client = _build_mcp_client(config)
+
+        def broker_factory(max_live_orders_per_process: int) -> AgenticMcpEquityBroker:
+            return AgenticMcpEquityBroker(
+                account_number=daemon_config.account_number,
+                client=client,
+                live_trading_enabled=_run_daily_live_trading_enabled(daemon_config, args.review_only),
+                auto_place_orders=_run_daily_auto_place_orders(daemon_config, args.review_only),
+                max_live_order_dollars=args.max_live_order_dollars,
+                max_live_orders_per_process=max_live_orders_per_process,
+            )
+
+        daemon = PersistentDaemon(
+            config=daemon_config,
+            state_store=DaemonStateStore(_daemon_state_path(daemon_config, args.state_file)),
+            broker_factory=broker_factory,
+            candle_file=args.candle_file,
+            candle_range=args.range,
+            clock=MarketClock(pre_open_warmup_minutes=daemon_config.pre_open_warmup_minutes),
+            review_only=args.review_only,
+            max_live_order_dollars=args.max_live_order_dollars,
+            order_result_reconciler=lambda result: _reconcile_order_result(
+                daemon_config.account_number,
+                client,
+                result,
+            ),
+        )
+        result = daemon.run(max_iterations=args.max_iterations, status_only=args.status_only)
+        print(
+            "[summary] "
+            f"iterations={result.iterations} decisions={result.decisions} "
+            f"skipped_candles={result.skipped_quotes} collection_errors={result.collection_errors} "
+            f"account_cash=${result.paper_cash:.2f}"
+        )
+        return 0
+
     if args.command == "run-daily":
         broker_name = config.broker.strip().lower()
         if broker_name != "agentic_mcp":
@@ -302,6 +395,11 @@ def main() -> int:
         tz = _daily_daemon_timezone(args.timezone)
         effective_journal_path = args.journal or config.journal_path
         completed_days = _daily_daemon_completed_days(effective_journal_path)
+        if args.rerun_today:
+            current_trade_day = _daily_daemon_trade_day(datetime.now(tz))
+            if current_trade_day:
+                completed_days.discard(current_trade_day)
+                print(f"[daemon] rerun_today=true ignoring completed marker for {current_trade_day}")
         passes = 0
         print(
             "[daemon] "
@@ -838,6 +936,17 @@ def _mcp_token_store_path(config) -> Path:
     return Path(service_root) / "rh_agentic_mcp_tokens.json"
 
 
+def _daemon_state_path(config: AgenticConfig, override: Path | None = None) -> Path:
+    if override is not None:
+        return override
+    if config.daemon_state_path:
+        return Path(config.daemon_state_path)
+    service_root = os.environ.get("SERVICE_ROOT")
+    if not service_root:
+        raise RuntimeError("SERVICE_ROOT must be set for daemon state storage")
+    return Path(service_root) / "rh_agentic_state.json"
+
+
 def _mcp_orders_arguments(account_number: str, args) -> dict[str, str]:
     arguments = {"account_number": account_number}
     for attr, key in (
@@ -856,7 +965,7 @@ def _mcp_orders_arguments(account_number: str, args) -> dict[str, str]:
 
 
 def _reconcile_order_result(account_number: str, client, result: OrderResult) -> OrderResult:
-    if not result.placed or result.order_id:
+    if (not result.placed and result.status != "unconfirmed") or result.order_id:
         return result
 
     order = _find_matching_equity_order(account_number, client, result.intent, result.timestamp)
@@ -866,6 +975,7 @@ def _reconcile_order_result(account_number: str, client, result: OrderResult) ->
     raw = {"placement": result.raw, "reconciled_order": order}
     return replace(
         result,
+        placed=True,
         order_id=str(_first_present(order, "id", "order_id") or ""),
         status=str(_first_present(order, "state", "status") or result.status),
         filled_quantity=_float_or_default(

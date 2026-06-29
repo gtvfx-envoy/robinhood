@@ -12,6 +12,9 @@ nav:
   - API Reference:
       - Overview: api/index.md
       - Config: api/config.md
+      - Daemon: api/daemon.md
+      - Daemon State: api/daemon-state.md
+      - Market Clock: api/market-clock.md
       - Bot: api/bot.md
       - Strategy: api/strategy.md
       - Risk: api/risk.md

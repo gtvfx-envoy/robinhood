@@ -38,6 +38,7 @@ class AgenticMcpEquityBroker(Broker):
         self.auto_place_orders = auto_place_orders
         self.max_live_order_dollars = max_live_order_dollars
         self.max_live_orders_per_process = max_live_orders_per_process
+        self._live_order_attempts = 0
         self._live_orders_submitted = 0
 
     def get_account_snapshot(self) -> AccountSnapshot:
@@ -133,15 +134,29 @@ class AgenticMcpEquityBroker(Broker):
                 raw=review.raw,
             )
 
+        self._live_order_attempts += 1
         payload = self.client.call_tool("place_equity_order", self._order_arguments(intent))
-        self._live_orders_submitted += 1
         result = _as_mapping(payload)
+        order_id = _extract_order_id(result)
+        if not order_id:
+            return OrderResult(
+                intent=intent,
+                placed=False,
+                status="unconfirmed",
+                reason="mcp order submission unconfirmed: missing order id",
+                order_id="",
+                filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
+                average_price=_extract_float(result, ("average_price", "price")),
+                raw=payload,
+            )
+
+        self._live_orders_submitted += 1
         return OrderResult(
             intent=intent,
             placed=True,
             status=str(result.get("state") or result.get("status") or "submitted"),
             reason="mcp order submitted",
-            order_id=str(result.get("id") or result.get("order_id") or ""),
+            order_id=order_id,
             filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
             average_price=_extract_float(result, ("average_price", "price")),
             raw=payload,
@@ -180,11 +195,23 @@ class AgenticMcpEquityBroker(Broker):
     def _live_order_fuse_reason(self) -> str:
         if self.max_live_orders_per_process <= 0:
             return "max_live_orders_per_process must be greater than 0"
-        if self._live_orders_submitted >= self.max_live_orders_per_process:
+        if self._live_order_attempts >= self.max_live_orders_per_process:
             return (
-                f"live order fuse tripped ({self._live_orders_submitted}/{self.max_live_orders_per_process} submitted)"
+                f"live order fuse tripped "
+                f"({self._live_order_attempts}/{self.max_live_orders_per_process} attempted, "
+                f"{self._live_orders_submitted} submitted)"
             )
         return ""
+
+
+def _extract_order_id(payload: dict[str, Any]) -> str:
+    return str(
+        _get_path(payload, "id")
+        or _get_path(payload, "order_id")
+        or _get_path(payload, "order.id")
+        or _get_path(payload, "order.order_id")
+        or ""
+    )
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:

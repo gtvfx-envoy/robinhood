@@ -442,7 +442,7 @@ class DailyCandleBrokerSession:
             return f"no broker order: {plan.reason}"
 
         result = self.broker.place_order(plan.intent, price)
-        if result.placed and self.order_result_reconciler is not None:
+        if (result.placed or result.status == "unconfirmed") and self.order_result_reconciler is not None:
             result = self.order_result_reconciler(result)
         self.bot.journal.append_execution(entry, _execution_payload(result))
         if result.status in {"reviewed", "submitted", "filled"} or result.placed:

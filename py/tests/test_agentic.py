@@ -43,8 +43,11 @@ from robinhood.agentic.config import (
     load_personal_config,
     load_symbols,
 )
+from robinhood.agentic.daemon import PersistentDaemon, StateBackedBroker
+from robinhood.agentic.daemon_state import DaemonState, DaemonStateStore, PendingOrderState
 from robinhood.agentic.execution import plan_order_intent
 from robinhood.agentic.journal import DecisionJournal
+from robinhood.agentic.market_clock import MarketClock
 from robinhood.agentic.market_data import (
     Candle,
     CandleCollector,
@@ -151,8 +154,11 @@ class AgenticBotTests(unittest.TestCase):
                         "live_order_confirm": LIVE_ORDER_CONFIRMATION,
                         "journal_path": "R:/service/agentic_decisions.jsonl",
                         "quote_source_path": "R:/service/rh_quotes.json",
+                        "daemon_state_path": "R:/service/rh_agentic_state.json",
                         "poll_seconds": 30,
                         "paper_starting_cash": 5000,
+                        "pre_open_warmup_minutes": 10,
+                        "regular_trading_only": True,
                     }
                 ),
                 encoding="utf-8",
@@ -173,8 +179,11 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(config.live_order_confirm, LIVE_ORDER_CONFIRMATION)
         self.assertEqual(config.journal_path, "R:/service/agentic_decisions.jsonl")
         self.assertEqual(config.quote_source_path, "R:/service/rh_quotes.json")
+        self.assertEqual(config.daemon_state_path, "R:/service/rh_agentic_state.json")
         self.assertEqual(config.poll_seconds, 30.0)
         self.assertEqual(config.paper_starting_cash, 5000.0)
+        self.assertEqual(config.pre_open_warmup_minutes, 10)
+        self.assertTrue(config.regular_trading_only)
 
     def test_load_config_merges_repo_symbols_and_personal_risk(self):
         import tempfile
@@ -311,6 +320,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.timezone, "America/New_York")
         self.assertEqual(args.poll_seconds, 60.0)
         self.assertEqual(args.max_live_order_dollars, 5.0)
+        self.assertFalse(args.rerun_today)
         self.assertFalse(args.review_only)
 
     def test_run_daily_daemon_parser_overrides(self):
@@ -330,6 +340,7 @@ class AgenticBotTests(unittest.TestCase):
                 "1",
                 "--max-live-order-dollars",
                 "5",
+                "--rerun-today",
             ]
         )
 
@@ -339,6 +350,23 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.poll_seconds, 5.0)
         self.assertEqual(args.max_iterations, 1)
         self.assertEqual(args.max_live_order_dollars, 5.0)
+        self.assertTrue(args.rerun_today)
+
+    def test_run_daemon_parser_defaults(self):
+        args = build_parser().parse_args(["run-daemon", "--candle-file", "candles.json"])
+
+        self.assertEqual(args.command, "run-daemon")
+        self.assertEqual(args.candle_file, Path("candles.json"))
+        self.assertEqual(args.range, "1y")
+        self.assertEqual(args.max_live_order_dollars, 5.0)
+        self.assertFalse(args.review_only)
+        self.assertFalse(args.status_only)
+
+    def test_market_clock_parser(self):
+        args = build_parser().parse_args(["market-clock", "--timezone", "America/Chicago"])
+
+        self.assertEqual(args.command, "market-clock")
+        self.assertEqual(args.timezone, "America/Chicago")
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -560,6 +588,149 @@ class AgenticBotTests(unittest.TestCase):
     def test_daily_daemon_run_time_rejects_invalid_value(self):
         with self.assertRaisesRegex(SystemExit, "HH:MM"):
             _parse_daily_daemon_run_time("25:00")
+
+    def test_market_clock_states_and_next_wakeup(self):
+        clock = MarketClock(pre_open_warmup_minutes=5)
+        tz = ZoneInfo("America/New_York")
+
+        closed = clock.status(datetime(2026, 6, 29, 8, 0, tzinfo=tz))
+        warmup = clock.status(datetime(2026, 6, 29, 9, 26, tzinfo=tz))
+        open_ = clock.status(datetime(2026, 6, 29, 10, 0, tzinfo=tz))
+        after_close = clock.status(datetime(2026, 6, 29, 16, 1, tzinfo=tz))
+        weekend = clock.status(datetime(2026, 7, 4, 10, 0, tzinfo=tz))
+
+        self.assertEqual(closed.state, "closed")
+        self.assertEqual(closed.next_wakeup.hour, 9)
+        self.assertEqual(closed.next_wakeup.minute, 25)
+        self.assertEqual(warmup.state, "warmup")
+        self.assertEqual(open_.state, "open")
+        self.assertTrue(open_.trading_allowed)
+        self.assertEqual(after_close.state, "after_close")
+        self.assertEqual(weekend.state, "closed")
+        self.assertEqual(weekend.next_open.date().isoformat(), "2026-07-06")
+
+    def test_daemon_state_store_persists_and_rolls_trade_day(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = DaemonStateStore(Path(tmp_dir) / "state.json")
+            state = DaemonState(
+                trading_day="2026-06-29",
+                live_order_attempts=1,
+                pending_orders=(PendingOrderState("ref", "QQQ", "buy", "unconfirmed", dollar_amount=5.0),),
+            )
+            store.save(state)
+
+            loaded = store.load()
+            rolled = loaded.for_trade_day("2026-06-30")
+
+        self.assertEqual(loaded.live_order_attempts, 1)
+        self.assertEqual(loaded.pending_orders[0].symbol, "QQQ")
+        self.assertEqual(rolled.trading_day, "2026-06-30")
+        self.assertEqual(rolled.live_order_attempts, 0)
+        self.assertEqual(rolled.pending_orders, ())
+
+    def test_state_backed_broker_blocks_after_submitted_pending_order(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = DaemonStateStore(Path(tmp_dir) / "state.json")
+            store.save(DaemonState(trading_day="2026-06-29"))
+            broker = StateBackedBroker(
+                _FakeConfirmedBroker(cash=100.0),
+                store,
+                AgenticConfig(risk=RiskConfig(max_live_order_attempts_per_day=1, max_live_notional_per_day=10.0)),
+            )
+
+            first = broker.place_order(OrderIntent("QQQ", "buy", dollar_amount=5.0), price=100.0)
+            second = broker.place_order(OrderIntent("IWM", "buy", dollar_amount=5.0), price=100.0)
+            state = store.load()
+
+        self.assertTrue(first.placed)
+        self.assertFalse(second.placed)
+        self.assertEqual(second.status, "rejected")
+        self.assertIn("pending or unconfirmed", second.reason)
+        self.assertEqual(state.live_order_attempts, 1)
+        self.assertEqual(state.live_orders_submitted, 1)
+
+    def test_state_backed_broker_enforces_daily_attempt_limit(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = DaemonStateStore(Path(tmp_dir) / "state.json")
+            store.save(DaemonState(trading_day="2026-06-29", live_order_attempts=1))
+            broker = StateBackedBroker(
+                _FakeConfirmedBroker(cash=100.0),
+                store,
+                AgenticConfig(risk=RiskConfig(max_live_order_attempts_per_day=1, max_live_notional_per_day=10.0)),
+            )
+
+            result = broker.place_order(OrderIntent("IWM", "buy", dollar_amount=5.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("daily live order attempt limit", result.reason)
+
+    def test_state_backed_broker_blocks_when_pending_order_exists(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = DaemonStateStore(Path(tmp_dir) / "state.json")
+            store.save(
+                DaemonState(
+                    trading_day="2026-06-29",
+                    pending_orders=(PendingOrderState("ref", "QQQ", "buy", "unconfirmed"),),
+                )
+            )
+            broker = StateBackedBroker(
+                _FakeConfirmedBroker(cash=100.0),
+                store,
+                AgenticConfig(risk=RiskConfig(max_live_order_attempts_per_day=2)),
+            )
+
+            result = broker.place_order(OrderIntent("IWM", "buy", dollar_amount=5.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("pending or unconfirmed", result.reason)
+
+    def test_persistent_daemon_runs_daily_lane_once_per_trade_day(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+        candles = tuple(_daily_candles("QQQ", [100 + index for index in range(60)]))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            candle_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "journal.jsonl"
+            store = DaemonStateStore(state_path)
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("QQQ",)),
+                lanes=(LaneConfig("stocks", symbols=("QQQ",), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=5.0, max_live_order_attempts_per_day=1),
+            )
+            daemon = PersistentDaemon(
+                config=config,
+                state_store=store,
+                broker_factory=lambda _max_attempts: _FakeConfirmedBroker(cash=100.0),
+                candle_file=candle_path,
+                clock=MarketClock(pre_open_warmup_minutes=5),
+                candle_source=StaticHistoricalMarketDataSource({"QQQ": candles}),
+                now_fn=lambda: datetime(2026, 6, 29, 10, 0, tzinfo=tz),
+                sleep_fn=lambda _seconds: None,
+            )
+
+            first = daemon.run(max_iterations=1)
+            second = daemon.run(max_iterations=1)
+            state = store.load()
+
+        self.assertEqual(first.decisions, 1)
+        self.assertEqual(second.decisions, 0)
+        self.assertEqual(state.lane_evaluations["stocks"], "2026-06-29")
+        self.assertEqual(state.live_order_attempts, 1)
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
@@ -1022,6 +1193,56 @@ class AgenticBotTests(unittest.TestCase):
         self.assertIn("live order fuse tripped", second.reason)
         self.assertEqual(client.calls.count("place_equity_order"), 1)
 
+    def test_agentic_mcp_broker_marks_missing_order_id_as_unconfirmed(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {"state": "submitted"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "unconfirmed")
+        self.assertIn("missing order id", result.reason)
+        self.assertEqual(result.order_id, "")
+        self.assertEqual(client.calls.count("place_equity_order"), 1)
+
+    def test_agentic_mcp_broker_attempt_fuse_blocks_after_unconfirmed_submission(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {"state": "submitted"},
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        first = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+        second = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertEqual(first.status, "unconfirmed")
+        self.assertFalse(second.placed)
+        self.assertEqual(second.status, "rejected")
+        self.assertIn("live order fuse tripped", second.reason)
+        self.assertIn("attempted", second.reason)
+        self.assertEqual(client.calls.count("place_equity_order"), 1)
+
     def test_agentic_mcp_broker_rejects_invalid_live_order_fuse(self):
         client = _FakeMcpClient(
             {
@@ -1236,6 +1457,38 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(reconciled.status, "queued")
         self.assertEqual(reconciled.filled_quantity, 0.0)
         self.assertIn("reconciled_order", reconciled.raw)
+
+    def test_reconcile_order_result_promotes_unconfirmed_order(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "order-1",
+                                "symbol": "SPY",
+                                "side": "buy",
+                                "type": "market",
+                                "state": "queued",
+                                "dollar_based_amount": {"amount": "1.00"},
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        result = OrderResult(
+            intent=OrderIntent("SPY", "buy", dollar_amount=1.0),
+            placed=False,
+            status="unconfirmed",
+            reason="mcp order submission unconfirmed: missing order id",
+        )
+
+        reconciled = _reconcile_order_result("123", client, result)
+
+        self.assertTrue(reconciled.placed)
+        self.assertEqual(reconciled.order_id, "order-1")
+        self.assertEqual(reconciled.status, "queued")
 
     def test_reconcile_journal_rows_appends_status_event(self):
         client = _FakeMcpClient(
@@ -2031,6 +2284,18 @@ class _FakePlacedBroker(_FakeReviewBroker):
             status="submitted",
             reason="mcp order submitted",
             order_id="",
+        )
+
+
+class _FakeConfirmedBroker(_FakeReviewBroker):
+    def place_order(self, intent, price):
+        self.orders.append(intent)
+        return OrderResult(
+            intent=intent,
+            placed=True,
+            status="submitted",
+            reason="mcp order submitted",
+            order_id=f"order-{len(self.orders)}",
         )
 
 

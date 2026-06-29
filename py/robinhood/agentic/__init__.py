@@ -25,7 +25,10 @@ from .config import (
     load_config,
     load_lanes,
 )
+from .daemon import PersistentDaemon, StateBackedBroker
+from .daemon_state import DaemonState, DaemonStateStore, PendingOrderState
 from .execution import ExecutionPlan, plan_order_intent
+from .market_clock import MarketClock, MarketClockStatus
 from .market_data import (
     Candle,
     CandleCollector,
@@ -65,6 +68,8 @@ __all__ = [
     "Candle",
     "CandleCollector",
     "CryptoScalpStrategy",
+    "DaemonState",
+    "DaemonStateStore",
     "DailyTrendFollowStrategy",
     "Decision",
     "HistoricalMarketDataSource",
@@ -73,6 +78,8 @@ __all__ = [
     "LaneConfig",
     "MarketDataSource",
     "MarketDataUnavailable",
+    "MarketClock",
+    "MarketClockStatus",
     "ManualQuoteProvider",
     "AgenticMcpEquityBroker",
     "McpClientUnavailable",
@@ -82,6 +89,8 @@ __all__ = [
     "OrderReview",
     "PaperSession",
     "PaperBroker",
+    "PendingOrderState",
+    "PersistentDaemon",
     "Position",
     "ExecutionPlan",
     "QuoteCollector",
@@ -90,6 +99,7 @@ __all__ = [
     "QuoteSnapshot",
     "RiskConfig",
     "SimpleMomentumStrategy",
+    "StateBackedBroker",
     "StaticHistoricalMarketDataSource",
     "StaticMarketDataSource",
     "StreamableHttpMcpToolClient",
