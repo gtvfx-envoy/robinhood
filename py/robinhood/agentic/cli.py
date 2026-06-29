@@ -125,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Review-only override for risk.max_open_positions.",
     )
+    run_daily.add_argument(
+        "--what-if-max-total-exposure-dollars",
+        type=float,
+        help="Review-only override for risk.max_total_exposure_dollars.",
+    )
     _add_common_args(run_daily)
     return parser
 
@@ -230,6 +235,8 @@ def main() -> int:
             bot.journal.path = args.journal
         if args.what_if_max_open_positions is not None:
             print(f"[what-if] max_open_positions={config.risk.max_open_positions}")
+        if args.what_if_max_total_exposure_dollars is not None:
+            print(f"[what-if] max_total_exposure_dollars={config.risk.max_total_exposure_dollars:.2f}")
 
         broker = AgenticMcpEquityBroker(
             account_number=config.account_number,
@@ -645,13 +652,22 @@ def _run_daily_auto_place_orders(config: AgenticConfig, review_only: bool) -> bo
 
 def _apply_run_daily_what_if_overrides(config: AgenticConfig, args) -> AgenticConfig:
     max_open_positions = getattr(args, "what_if_max_open_positions", None)
-    if max_open_positions is None:
+    max_total_exposure_dollars = getattr(args, "what_if_max_total_exposure_dollars", None)
+    if max_open_positions is None and max_total_exposure_dollars is None:
         return config
     if not getattr(args, "review_only", False):
-        raise SystemExit("--what-if-max-open-positions requires --review-only")
-    if max_open_positions <= 0:
+        raise SystemExit("run-daily what-if overrides require --review-only")
+    if max_open_positions is not None and max_open_positions <= 0:
         raise SystemExit("--what-if-max-open-positions must be greater than 0")
-    return replace(config, risk=replace(config.risk, max_open_positions=max_open_positions))
+    if max_total_exposure_dollars is not None and max_total_exposure_dollars < 0:
+        raise SystemExit("--what-if-max-total-exposure-dollars must be 0 or greater")
+
+    risk = config.risk
+    if max_open_positions is not None:
+        risk = replace(risk, max_open_positions=max_open_positions)
+    if max_total_exposure_dollars is not None:
+        risk = replace(risk, max_total_exposure_dollars=max_total_exposure_dollars)
+    return replace(config, risk=risk)
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

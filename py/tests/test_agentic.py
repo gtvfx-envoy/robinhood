@@ -275,6 +275,8 @@ class AgenticBotTests(unittest.TestCase):
                 "--review-only",
                 "--what-if-max-open-positions",
                 "2",
+                "--what-if-max-total-exposure-dollars",
+                "50",
             ]
         )
 
@@ -283,6 +285,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.range, "6mo")
         self.assertTrue(args.review_only)
         self.assertEqual(args.what_if_max_open_positions, 2)
+        self.assertEqual(args.what_if_max_total_exposure_dollars, 50.0)
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -403,14 +406,19 @@ class AgenticBotTests(unittest.TestCase):
     def test_run_daily_what_if_override_requires_review_only(self):
         config = AgenticConfig(risk=RiskConfig(max_open_positions=1))
         args = build_parser().parse_args(
-            ["run-daily", "--candle-file", "candles.json", "--what-if-max-open-positions", "2"]
+            ["run-daily", "--candle-file", "candles.json", "--what-if-max-total-exposure-dollars", "50"]
         )
 
-        with self.assertRaisesRegex(SystemExit, "requires --review-only"):
+        with self.assertRaisesRegex(SystemExit, "require --review-only"):
             _apply_run_daily_what_if_overrides(config, args)
 
-    def test_run_daily_what_if_override_updates_max_open_positions(self):
-        config = AgenticConfig(risk=RiskConfig(max_open_positions=1))
+    def test_run_daily_what_if_override_updates_risk_limits(self):
+        config = AgenticConfig(
+            risk=RiskConfig(
+                max_open_positions=1,
+                max_total_exposure_dollars=10.0,
+            )
+        )
         args = build_parser().parse_args(
             [
                 "run-daily",
@@ -419,13 +427,33 @@ class AgenticBotTests(unittest.TestCase):
                 "--review-only",
                 "--what-if-max-open-positions",
                 "2",
+                "--what-if-max-total-exposure-dollars",
+                "50",
             ]
         )
 
         updated = _apply_run_daily_what_if_overrides(config, args)
 
         self.assertEqual(updated.risk.max_open_positions, 2)
+        self.assertEqual(updated.risk.max_total_exposure_dollars, 50.0)
         self.assertEqual(config.risk.max_open_positions, 1)
+        self.assertEqual(config.risk.max_total_exposure_dollars, 10.0)
+
+    def test_run_daily_what_if_rejects_negative_exposure_override(self):
+        config = AgenticConfig(risk=RiskConfig(max_total_exposure_dollars=10.0))
+        args = build_parser().parse_args(
+            [
+                "run-daily",
+                "--candle-file",
+                "candles.json",
+                "--review-only",
+                "--what-if-max-total-exposure-dollars",
+                "-1",
+            ]
+        )
+
+        with self.assertRaisesRegex(SystemExit, "0 or greater"):
+            _apply_run_daily_what_if_overrides(config, args)
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
