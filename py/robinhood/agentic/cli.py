@@ -120,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force broker review mode for this run, even when live gates are enabled.",
     )
+    run_daily.add_argument(
+        "--what-if-max-open-positions",
+        type=int,
+        help="Review-only override for risk.max_open_positions.",
+    )
     _add_common_args(run_daily)
     return parser
 
@@ -219,6 +224,12 @@ def main() -> int:
             raise SystemExit("run-daily requires broker=agentic_mcp in personal config")
         if not config.account_number:
             raise SystemExit("run-daily with agentic_mcp broker requires account_number in personal config")
+        config = _apply_run_daily_what_if_overrides(config, args)
+        bot = AgenticBot(config=config)
+        if args.journal:
+            bot.journal.path = args.journal
+        if args.what_if_max_open_positions is not None:
+            print(f"[what-if] max_open_positions={config.risk.max_open_positions}")
 
         broker = AgenticMcpEquityBroker(
             account_number=config.account_number,
@@ -630,6 +641,17 @@ def _run_daily_live_trading_enabled(config: AgenticConfig, review_only: bool) ->
 
 def _run_daily_auto_place_orders(config: AgenticConfig, review_only: bool) -> bool:
     return False if review_only else config.auto_place_orders
+
+
+def _apply_run_daily_what_if_overrides(config: AgenticConfig, args) -> AgenticConfig:
+    max_open_positions = getattr(args, "what_if_max_open_positions", None)
+    if max_open_positions is None:
+        return config
+    if not getattr(args, "review_only", False):
+        raise SystemExit("--what-if-max-open-positions requires --review-only")
+    if max_open_positions <= 0:
+        raise SystemExit("--what-if-max-open-positions must be greater than 0")
+    return replace(config, risk=replace(config.risk, max_open_positions=max_open_positions))
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

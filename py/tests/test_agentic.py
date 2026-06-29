@@ -8,6 +8,7 @@ from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend
 from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker, Position
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.cli import (
+    _apply_run_daily_what_if_overrides,
     _extract_order_rows,
     _format_order_row,
     _journal_place_once,
@@ -265,13 +266,23 @@ class AgenticBotTests(unittest.TestCase):
 
     def test_run_daily_parser_supports_review_only(self):
         args = build_parser().parse_args(
-            ["run-daily", "--candle-file", "candles.json", "--range", "6mo", "--review-only"]
+            [
+                "run-daily",
+                "--candle-file",
+                "candles.json",
+                "--range",
+                "6mo",
+                "--review-only",
+                "--what-if-max-open-positions",
+                "2",
+            ]
         )
 
         self.assertEqual(args.command, "run-daily")
         self.assertEqual(args.candle_file, Path("candles.json"))
         self.assertEqual(args.range, "6mo")
         self.assertTrue(args.review_only)
+        self.assertEqual(args.what_if_max_open_positions, 2)
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -388,6 +399,33 @@ class AgenticBotTests(unittest.TestCase):
         self.assertTrue(_run_daily_auto_place_orders(config, review_only=False))
         self.assertFalse(_run_daily_live_trading_enabled(config, review_only=True))
         self.assertFalse(_run_daily_auto_place_orders(config, review_only=True))
+
+    def test_run_daily_what_if_override_requires_review_only(self):
+        config = AgenticConfig(risk=RiskConfig(max_open_positions=1))
+        args = build_parser().parse_args(
+            ["run-daily", "--candle-file", "candles.json", "--what-if-max-open-positions", "2"]
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --review-only"):
+            _apply_run_daily_what_if_overrides(config, args)
+
+    def test_run_daily_what_if_override_updates_max_open_positions(self):
+        config = AgenticConfig(risk=RiskConfig(max_open_positions=1))
+        args = build_parser().parse_args(
+            [
+                "run-daily",
+                "--candle-file",
+                "candles.json",
+                "--review-only",
+                "--what-if-max-open-positions",
+                "2",
+            ]
+        )
+
+        updated = _apply_run_daily_what_if_overrides(config, args)
+
+        self.assertEqual(updated.risk.max_open_positions, 2)
+        self.assertEqual(config.risk.max_open_positions, 1)
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
