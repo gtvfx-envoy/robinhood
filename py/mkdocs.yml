@@ -1,0 +1,45 @@
+site_name: Robinhood Agentic Bot
+site_description: Local documentation for the Robinhood agentic trading bot.
+repo_url: ""
+theme:
+  name: readthedocs
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - CLI: cli.md
+  - Risk Controls: risk-controls.md
+  - Automation: automation.md
+  - API Reference:
+      - Overview: api/index.md
+      - Config: api/config.md
+      - Bot: api/bot.md
+      - Strategy: api/strategy.md
+      - Risk: api/risk.md
+      - Execution: api/execution.md
+      - Sessions: api/session.md
+      - Broker: api/broker.md
+      - MCP Broker: api/mcp-broker.md
+      - Market Data: api/market-data.md
+      - Journal: api/journal.md
+      - Backtest: api/backtest.md
+      - Quotes: api/quotes.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            docstring_style: sphinx
+            filters:
+              - "!^_"
+            inherited_members: true
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_source: true
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
