@@ -22,7 +22,53 @@ Check the clock and state without trading:
 
 ```powershell
 python -m robinhood.agentic.cli market-clock
+python -m robinhood.agentic.cli daemon-state
 python -m robinhood.agentic.cli run-daemon --status-only --candle-file R:\service\rh_daily_candles.json
+```
+
+## Operator State Commands
+
+Use these commands when the daemon has submitted or unconfirmed orders and you
+need a clean readback before allowing more live attempts:
+
+```powershell
+python -m robinhood.agentic.cli daemon-state
+python -m robinhood.agentic.cli daemon-reconcile --dry-run
+python -m robinhood.agentic.cli daemon-reconcile
+```
+
+`daemon-reconcile` reads pending daemon orders from state, checks broker order
+readback, and keeps only unresolved or still-open pending orders. It appends a
+`daemon_state_reconciliation` journal event when not run with `--dry-run`.
+
+Clear pending state only after confirming the broker has no matching open order:
+
+```powershell
+python -m robinhood.agentic.cli daemon-clear-pending --reason "broker readback confirmed no open order"
+```
+
+The clear command requires `--reason`, writes the updated state file, and journals
+the operator action with the orders that were cleared.
+
+## Market Calendar
+
+For holidays and half-days, add `market_calendar_path` to the personal config:
+
+```json
+{
+  "market_calendar_path": "R:/service/market_calendar.json"
+}
+```
+
+The calendar file is optional. Missing files fall back to weekday regular hours.
+
+```json
+{
+  "closed_dates": ["2026-07-03"],
+  "half_days": {
+    "2026-11-27": "13:00"
+  }
+}
 ```
 
 ## Daily Smoke Daemon

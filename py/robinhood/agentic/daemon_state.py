@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -63,6 +64,48 @@ class DaemonStateStore:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
         tmp_path.replace(self.path)
+
+
+def daemon_state_summary(state: DaemonState, path: Path | str | None = None) -> str:
+    path_text = f" path={path}" if path else ""
+    lines = [
+        f"[daemon-state]{path_text}",
+        f"trading_day={state.trading_day or '-'}",
+        f"last_warmup_at={state.last_warmup_at or '-'}",
+        f"last_reconciliation_at={state.last_reconciliation_at or '-'}",
+        f"live_order_attempts={state.live_order_attempts}",
+        f"live_orders_submitted={state.live_orders_submitted}",
+        f"live_notional_attempted=${state.live_notional_attempted:.2f}",
+        f"live_notional_submitted=${state.live_notional_submitted:.2f}",
+        f"lane_evaluations={state.lane_evaluations or {}}",
+        f"pending_orders={len(state.pending_orders)}",
+    ]
+    for index, order in enumerate(state.pending_orders, start=1):
+        lines.append(
+            "pending_order "
+            f"{index}: symbol={order.symbol} side={order.side} status={order.status} "
+            f"dollars=${order.dollar_amount:.2f} order_id={order.order_id or '-'} "
+            f"ref_id={order.ref_id or '-'} timestamp={order.timestamp or '-'}"
+        )
+    return "\n".join(lines)
+
+
+def replace_state_pending(state: DaemonState, pending_orders: tuple[PendingOrderState, ...]) -> DaemonState:
+    return DaemonState(
+        trading_day=state.trading_day,
+        last_warmup_at=state.last_warmup_at,
+        last_reconciliation_at=datetime.now(UTC).isoformat(),
+        lane_evaluations=dict(state.lane_evaluations),
+        live_order_attempts=state.live_order_attempts,
+        live_orders_submitted=state.live_orders_submitted,
+        live_notional_attempted=state.live_notional_attempted,
+        live_notional_submitted=state.live_notional_submitted,
+        pending_orders=tuple(pending_orders),
+    )
+
+
+def clear_pending_orders(state: DaemonState) -> DaemonState:
+    return replace_state_pending(state, ())
 
 
 def _state_from_payload(payload: dict[str, Any]) -> DaemonState:

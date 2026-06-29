@@ -24,6 +24,7 @@ from robinhood.agentic.cli import (
     _mcp_orders_arguments,
     _mcp_review_intent,
     _parse_daily_daemon_run_time,
+    _reconcile_daemon_state,
     _reconcile_journal_rows,
     _reconcile_order_result,
     _run_daily_auto_place_orders,
@@ -44,10 +45,16 @@ from robinhood.agentic.config import (
     load_symbols,
 )
 from robinhood.agentic.daemon import PersistentDaemon, StateBackedBroker
-from robinhood.agentic.daemon_state import DaemonState, DaemonStateStore, PendingOrderState
+from robinhood.agentic.daemon_state import (
+    DaemonState,
+    DaemonStateStore,
+    PendingOrderState,
+    clear_pending_orders,
+    daemon_state_summary,
+)
 from robinhood.agentic.execution import plan_order_intent
 from robinhood.agentic.journal import DecisionJournal
-from robinhood.agentic.market_clock import MarketClock
+from robinhood.agentic.market_clock import MarketCalendar, MarketClock
 from robinhood.agentic.market_data import (
     Candle,
     CandleCollector,
@@ -155,6 +162,7 @@ class AgenticBotTests(unittest.TestCase):
                         "journal_path": "R:/service/agentic_decisions.jsonl",
                         "quote_source_path": "R:/service/rh_quotes.json",
                         "daemon_state_path": "R:/service/rh_agentic_state.json",
+                        "market_calendar_path": "R:/service/market_calendar.json",
                         "poll_seconds": 30,
                         "paper_starting_cash": 5000,
                         "pre_open_warmup_minutes": 10,
@@ -180,6 +188,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(config.journal_path, "R:/service/agentic_decisions.jsonl")
         self.assertEqual(config.quote_source_path, "R:/service/rh_quotes.json")
         self.assertEqual(config.daemon_state_path, "R:/service/rh_agentic_state.json")
+        self.assertEqual(config.market_calendar_path, "R:/service/market_calendar.json")
         self.assertEqual(config.poll_seconds, 30.0)
         self.assertEqual(config.paper_starting_cash, 5000.0)
         self.assertEqual(config.pre_open_warmup_minutes, 10)
@@ -367,6 +376,27 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertEqual(args.command, "market-clock")
         self.assertEqual(args.timezone, "America/Chicago")
+
+    def test_daemon_state_parser(self):
+        args = build_parser().parse_args(["daemon-state", "--state-file", "state.json", "--json"])
+
+        self.assertEqual(args.command, "daemon-state")
+        self.assertEqual(args.state_file, Path("state.json"))
+        self.assertTrue(args.json)
+
+    def test_daemon_reconcile_parser(self):
+        args = build_parser().parse_args(["daemon-reconcile", "--state-file", "state.json", "--dry-run"])
+
+        self.assertEqual(args.command, "daemon-reconcile")
+        self.assertEqual(args.state_file, Path("state.json"))
+        self.assertTrue(args.dry_run)
+
+    def test_daemon_clear_pending_parser_requires_reason(self):
+        args = build_parser().parse_args(["daemon-clear-pending", "--state-file", "state.json", "--reason", "manual"])
+
+        self.assertEqual(args.command, "daemon-clear-pending")
+        self.assertEqual(args.state_file, Path("state.json"))
+        self.assertEqual(args.reason, "manual")
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -609,6 +639,33 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(weekend.state, "closed")
         self.assertEqual(weekend.next_open.date().isoformat(), "2026-07-06")
 
+    def test_market_calendar_supports_closed_dates_and_half_days(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            calendar_path = Path(tmp_dir) / "market_calendar.json"
+            calendar_path.write_text(
+                json.dumps(
+                    {
+                        "closed_dates": ["2026-07-03"],
+                        "half_days": {"2026-11-27": "13:00"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            clock = MarketClock(calendar=MarketCalendar.from_file(calendar_path))
+
+        holiday = clock.status(datetime(2026, 7, 3, 10, 0, tzinfo=tz))
+        half_day_open = clock.status(datetime(2026, 11, 27, 12, 0, tzinfo=tz))
+        half_day_closed = clock.status(datetime(2026, 11, 27, 13, 1, tzinfo=tz))
+
+        self.assertEqual(holiday.state, "closed")
+        self.assertEqual(holiday.next_open.date().isoformat(), "2026-07-06")
+        self.assertEqual(half_day_open.state, "open")
+        self.assertEqual(half_day_open.next_close.hour, 13)
+        self.assertEqual(half_day_closed.state, "after_close")
+
     def test_daemon_state_store_persists_and_rolls_trade_day(self):
         import tempfile
 
@@ -629,6 +686,138 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(rolled.trading_day, "2026-06-30")
         self.assertEqual(rolled.live_order_attempts, 0)
         self.assertEqual(rolled.pending_orders, ())
+
+    def test_daemon_state_summary_and_clear_pending_orders(self):
+        state = DaemonState(
+            trading_day="2026-06-29",
+            live_order_attempts=1,
+            live_orders_submitted=1,
+            live_notional_attempted=5.0,
+            live_notional_submitted=5.0,
+            pending_orders=(
+                PendingOrderState(
+                    "ref-1",
+                    "QQQ",
+                    "buy",
+                    "submitted",
+                    order_id="order-1",
+                    dollar_amount=5.0,
+                    timestamp="2026-06-29T13:30:00Z",
+                ),
+            ),
+        )
+
+        summary = daemon_state_summary(state, "state.json")
+        cleared = clear_pending_orders(state)
+
+        self.assertIn("[daemon-state] path=state.json", summary)
+        self.assertIn("pending_orders=1", summary)
+        self.assertIn("symbol=QQQ", summary)
+        self.assertEqual(cleared.pending_orders, ())
+        self.assertEqual(cleared.live_order_attempts, 1)
+        self.assertTrue(cleared.last_reconciliation_at)
+
+    def test_reconcile_daemon_state_keeps_unresolved_pending_order(self):
+        state = DaemonState(
+            pending_orders=(
+                PendingOrderState(
+                    "ref-1",
+                    "QQQ",
+                    "buy",
+                    "submitted",
+                    order_id="missing",
+                    dollar_amount=5.0,
+                    timestamp="2026-06-29T13:30:00Z",
+                ),
+            )
+        )
+        client = _FakeMcpClient({"get_equity_orders": {"data": {"orders": []}}})
+
+        result = _reconcile_daemon_state("acct", client, state)
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(len(result["state"].pending_orders), 1)
+        self.assertIn("unresolved pending order", result["lines"][0])
+
+    def test_reconcile_daemon_state_resolves_terminal_order(self):
+        state = DaemonState(
+            pending_orders=(
+                PendingOrderState(
+                    "ref-1",
+                    "QQQ",
+                    "buy",
+                    "submitted",
+                    order_id="order-1",
+                    dollar_amount=5.0,
+                    timestamp="2026-06-29T13:30:00Z",
+                ),
+            )
+        )
+        client = _FakeMcpClient(
+            {
+                "get_equity_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "order-1",
+                                "symbol": "QQQ",
+                                "side": "buy",
+                                "type": "market",
+                                "state": "filled",
+                                "dollar_amount": 5.0,
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+        result = _reconcile_daemon_state("acct", client, state)
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["state"].pending_orders, ())
+        self.assertIn("resolved terminal status=filled", result["lines"][0])
+
+    def test_reconcile_daemon_state_updates_confirmed_pending_order(self):
+        state = DaemonState(
+            pending_orders=(
+                PendingOrderState(
+                    "ref-1",
+                    "IWM",
+                    "buy",
+                    "unconfirmed",
+                    dollar_amount=5.0,
+                    timestamp="2026-06-29T13:30:00Z",
+                ),
+            )
+        )
+        client = _FakeMcpClient(
+            {
+                "get_equity_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "order-2",
+                                "symbol": "IWM",
+                                "side": "buy",
+                                "type": "market",
+                                "state": "queued",
+                                "dollar_amount": 5.0,
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+        result = _reconcile_daemon_state("acct", client, state)
+        pending = result["state"].pending_orders
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].order_id, "order-2")
+        self.assertEqual(pending[0].status, "queued")
 
     def test_state_backed_broker_blocks_after_submitted_pending_order(self):
         import tempfile

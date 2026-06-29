@@ -28,7 +28,7 @@ from .config import (
 from .daemon import PersistentDaemon, StateBackedBroker
 from .daemon_state import DaemonState, DaemonStateStore, PendingOrderState
 from .execution import ExecutionPlan, plan_order_intent
-from .market_clock import MarketClock, MarketClockStatus
+from .market_clock import MarketCalendar, MarketClock, MarketClockStatus
 from .market_data import (
     Candle,
     CandleCollector,
@@ -78,6 +78,7 @@ __all__ = [
     "LaneConfig",
     "MarketDataSource",
     "MarketDataUnavailable",
+    "MarketCalendar",
     "MarketClock",
     "MarketClockStatus",
     "ManualQuoteProvider",

@@ -67,6 +67,7 @@ class PersonalConfig:
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     daemon_state_path: str = ""
+    market_calendar_path: str = ""
     poll_seconds: float = 60.0
     paper_starting_cash: float = 10000.0
     pre_open_warmup_minutes: int = 5
@@ -91,6 +92,7 @@ class AgenticConfig:
     journal_path: str = "logs/agentic_decisions.jsonl"
     quote_source_path: str = ""
     daemon_state_path: str = ""
+    market_calendar_path: str = ""
     poll_seconds: float = 60.0
     paper_starting_cash: float = 10000.0
     pre_open_warmup_minutes: int = 5
@@ -151,6 +153,7 @@ def load_config(
         journal_path=personal.journal_path,
         quote_source_path=personal.quote_source_path,
         daemon_state_path=personal.daemon_state_path,
+        market_calendar_path=personal.market_calendar_path,
         poll_seconds=personal.poll_seconds,
         paper_starting_cash=personal.paper_starting_cash,
         pre_open_warmup_minutes=personal.pre_open_warmup_minutes,
@@ -181,6 +184,7 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
         journal_path=str(payload.get("journal_path", "logs/agentic_decisions.jsonl")),
         quote_source_path=str(payload.get("quote_source_path", "")),
         daemon_state_path=str(payload.get("daemon_state_path", "")),
+        market_calendar_path=str(payload.get("market_calendar_path", "")),
         poll_seconds=float(payload.get("poll_seconds", 60.0)),
         paper_starting_cash=float(payload.get("paper_starting_cash", 10000.0)),
         pre_open_warmup_minutes=int(payload.get("pre_open_warmup_minutes", 5)),

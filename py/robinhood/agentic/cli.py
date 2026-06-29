@@ -18,9 +18,16 @@ from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
 from .config import LIVE_ORDER_CONFIRMATION, AgenticConfig, get_personal_config_path, load_config
 from .daemon import PersistentDaemon
-from .daemon_state import DaemonStateStore
+from .daemon_state import (
+    DaemonState,
+    DaemonStateStore,
+    PendingOrderState,
+    clear_pending_orders,
+    daemon_state_summary,
+    replace_state_pending,
+)
 from .journal import DecisionJournal
-from .market_clock import MarketClock
+from .market_clock import MarketCalendar, MarketClock
 from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
@@ -103,6 +110,27 @@ def build_parser() -> argparse.ArgumentParser:
     market_clock = subparsers.add_parser("market-clock", help="Print current market-clock state.")
     market_clock.add_argument("--timezone", default="America/New_York", help="Market timezone.")
     _add_common_args(market_clock)
+
+    daemon_state = subparsers.add_parser("daemon-state", help="Print persistent daemon state.")
+    daemon_state.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    daemon_state.add_argument("--json", action="store_true", help="Print raw daemon state JSON.")
+    _add_common_args(daemon_state)
+
+    daemon_reconcile = subparsers.add_parser(
+        "daemon-reconcile",
+        help="Reconcile pending daemon state orders against broker readback.",
+    )
+    daemon_reconcile.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    daemon_reconcile.add_argument("--dry-run", action="store_true", help="Print reconciliation without saving state.")
+    _add_common_args(daemon_reconcile)
+
+    daemon_clear = subparsers.add_parser(
+        "daemon-clear-pending",
+        help="Clear pending daemon orders with an explicit operator reason.",
+    )
+    daemon_clear.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    daemon_clear.add_argument("--reason", required=True, help="Operator reason for clearing pending state.")
+    _add_common_args(daemon_clear)
 
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
@@ -277,10 +305,7 @@ def main() -> int:
         return 0
 
     if args.command == "market-clock":
-        clock = MarketClock(
-            timezone=args.timezone,
-            pre_open_warmup_minutes=config.pre_open_warmup_minutes,
-        )
+        clock = _market_clock(config, timezone=args.timezone)
         status = clock.status()
         print(
             "[market-clock] "
@@ -289,6 +314,64 @@ def main() -> int:
             f"now={status.now.isoformat()} next_wakeup={status.next_wakeup.isoformat()} "
             f"next_open={status.next_open.isoformat()} next_close={status.next_close.isoformat()}"
         )
+        return 0
+
+    if args.command == "daemon-state":
+        state_path = _daemon_state_path(config, args.state_file)
+        state = DaemonStateStore(state_path).load()
+        if args.json:
+            print(json.dumps(_daemon_state_json_payload(state), indent=2, sort_keys=True))
+        else:
+            print(daemon_state_summary(state, state_path))
+        return 0
+
+    if args.command == "daemon-reconcile":
+        if not config.account_number:
+            raise SystemExit("daemon-reconcile requires account_number in personal config")
+        state_path = _daemon_state_path(config, args.state_file)
+        store = DaemonStateStore(state_path)
+        client = _build_mcp_client(config)
+        result = _reconcile_daemon_state(config.account_number, client, store.load())
+        print(
+            "[daemon-reconcile] "
+            f"checked={result['checked']} matched={result['matched']} "
+            f"remaining_pending={len(result['state'].pending_orders)} dry_run={args.dry_run}"
+        )
+        for line in result["lines"]:
+            print(line)
+        if not args.dry_run:
+            store.save(result["state"])
+            DecisionJournal(Path(config.journal_path)).append_event(
+                {
+                    "event_type": "daemon_state_reconciliation",
+                    "source": "daemon-reconcile",
+                    "checked": result["checked"],
+                    "matched": result["matched"],
+                    "remaining_pending": len(result["state"].pending_orders),
+                }
+            )
+        return 0
+
+    if args.command == "daemon-clear-pending":
+        reason = args.reason.strip()
+        if not reason:
+            raise SystemExit("--reason must not be empty")
+        state_path = _daemon_state_path(config, args.state_file)
+        store = DaemonStateStore(state_path)
+        state = store.load()
+        cleared = len(state.pending_orders)
+        updated = clear_pending_orders(state)
+        store.save(updated)
+        DecisionJournal(Path(config.journal_path)).append_event(
+            {
+                "event_type": "daemon_pending_clear",
+                "source": "daemon-clear-pending",
+                "reason": reason,
+                "cleared_pending_orders": cleared,
+                "pending_orders": [_pending_order_payload(order) for order in state.pending_orders],
+            }
+        )
+        print(f"[daemon-clear-pending] cleared={cleared} reason={reason}")
         return 0
 
     if args.command == "run-daemon":
@@ -321,7 +404,7 @@ def main() -> int:
             broker_factory=broker_factory,
             candle_file=args.candle_file,
             candle_range=args.range,
-            clock=MarketClock(pre_open_warmup_minutes=daemon_config.pre_open_warmup_minutes),
+            clock=_market_clock(daemon_config),
             review_only=args.review_only,
             max_live_order_dollars=args.max_live_order_dollars,
             order_result_reconciler=lambda result: _reconcile_order_result(
@@ -936,6 +1019,14 @@ def _mcp_token_store_path(config) -> Path:
     return Path(service_root) / "rh_agentic_mcp_tokens.json"
 
 
+def _market_clock(config: AgenticConfig, timezone: str = "America/New_York") -> MarketClock:
+    return MarketClock(
+        timezone=timezone,
+        pre_open_warmup_minutes=config.pre_open_warmup_minutes,
+        calendar=MarketCalendar.from_file(config.market_calendar_path),
+    )
+
+
 def _daemon_state_path(config: AgenticConfig, override: Path | None = None) -> Path:
     if override is not None:
         return override
@@ -945,6 +1036,90 @@ def _daemon_state_path(config: AgenticConfig, override: Path | None = None) -> P
     if not service_root:
         raise RuntimeError("SERVICE_ROOT must be set for daemon state storage")
     return Path(service_root) / "rh_agentic_state.json"
+
+
+def _daemon_state_json_payload(state: DaemonState) -> dict:
+    return {
+        "trading_day": state.trading_day,
+        "last_warmup_at": state.last_warmup_at,
+        "last_reconciliation_at": state.last_reconciliation_at,
+        "lane_evaluations": dict(state.lane_evaluations),
+        "live_order_attempts": state.live_order_attempts,
+        "live_orders_submitted": state.live_orders_submitted,
+        "live_notional_attempted": state.live_notional_attempted,
+        "live_notional_submitted": state.live_notional_submitted,
+        "pending_orders": [_pending_order_payload(order) for order in state.pending_orders],
+    }
+
+
+def _pending_order_payload(order: PendingOrderState) -> dict:
+    return {
+        "ref_id": order.ref_id,
+        "symbol": order.symbol,
+        "side": order.side,
+        "status": order.status,
+        "order_id": order.order_id,
+        "dollar_amount": order.dollar_amount,
+        "timestamp": order.timestamp,
+    }
+
+
+def _reconcile_daemon_state(account_number: str, client, state: DaemonState) -> dict:
+    pending: list[PendingOrderState] = []
+    lines: list[str] = []
+    matched = 0
+    for pending_order in state.pending_orders:
+        order = None
+        if pending_order.order_id:
+            order = _fetch_equity_order(account_number, client, pending_order.order_id)
+        if order is None:
+            intent = _intent_from_pending_order(pending_order)
+            if intent is not None:
+                order = _find_matching_equity_order(account_number, client, intent, pending_order.timestamp)
+
+        if order is None:
+            pending.append(pending_order)
+            lines.append(f"{pending_order.symbol}: unresolved pending order")
+            continue
+
+        matched += 1
+        order_id = str(_first_present(order, "id", "order_id") or pending_order.order_id)
+        status = str(_first_present(order, "state", "status") or pending_order.status)
+        if _terminal_order_status(status):
+            lines.append(f"{pending_order.symbol}: resolved terminal status={status} order_id={order_id}")
+            continue
+        pending.append(
+            PendingOrderState(
+                ref_id=pending_order.ref_id,
+                symbol=pending_order.symbol,
+                side=pending_order.side,
+                status=status,
+                order_id=order_id,
+                dollar_amount=pending_order.dollar_amount,
+                timestamp=pending_order.timestamp,
+            )
+        )
+        lines.append(f"{pending_order.symbol}: confirmed pending status={status} order_id={order_id}")
+
+    return {
+        "checked": len(state.pending_orders),
+        "matched": matched,
+        "state": replace_state_pending(state, tuple(pending)),
+        "lines": lines,
+    }
+
+
+def _intent_from_pending_order(order: PendingOrderState) -> OrderIntent | None:
+    try:
+        if order.dollar_amount > 0:
+            return OrderIntent(order.symbol, order.side, dollar_amount=order.dollar_amount)
+    except ValueError:
+        return None
+    return None
+
+
+def _terminal_order_status(status: str) -> bool:
+    return status.strip().lower() in {"filled", "cancelled", "canceled", "rejected", "failed", "voided"}
 
 
 def _mcp_orders_arguments(account_number: str, args) -> dict[str, str]:

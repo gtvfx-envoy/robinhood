@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
@@ -25,6 +27,36 @@ class MarketClockStatus:
         return self.state == "warmup"
 
 
+@dataclass(frozen=True)
+class MarketCalendar:
+    closed_dates: frozenset[str] = frozenset()
+    half_days: dict[str, time] | None = None
+
+    @classmethod
+    def from_file(cls, path: Path | str | None) -> MarketCalendar:
+        if not path:
+            return cls()
+        calendar_path = Path(path)
+        if not calendar_path.exists():
+            return cls()
+        payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("market calendar root must be an object")
+        closed_dates = frozenset(str(value) for value in payload.get("closed_dates", []))
+        half_days = {
+            str(day): _parse_hhmm(str(close_time)) for day, close_time in (payload.get("half_days", {}) or {}).items()
+        }
+        return cls(closed_dates=closed_dates, half_days=half_days)
+
+    def is_closed(self, day) -> bool:
+        return day.isoformat() in self.closed_dates
+
+    def close_time_for(self, day, default: time) -> time:
+        if not self.half_days:
+            return default
+        return self.half_days.get(day.isoformat(), default)
+
+
 class MarketClock:
     """Weekday regular-hours market clock for America/New_York sessions."""
 
@@ -34,6 +66,7 @@ class MarketClock:
         open_time: time = time(9, 30),
         close_time: time = time(16, 0),
         pre_open_warmup_minutes: int = 5,
+        calendar: MarketCalendar | None = None,
     ):
         if pre_open_warmup_minutes < 0:
             raise ValueError("pre_open_warmup_minutes must be 0 or greater")
@@ -41,6 +74,7 @@ class MarketClock:
         self.open_time = open_time
         self.close_time = close_time
         self.pre_open_warmup_minutes = pre_open_warmup_minutes
+        self.calendar = calendar or MarketCalendar()
 
     def status(self, now: datetime | None = None) -> MarketClockStatus:
         now = self._normalize_now(now)
@@ -48,7 +82,7 @@ class MarketClock:
         next_open = self._next_open(now)
         next_close = self._close_for(next_open.date())
 
-        if not _is_weekday(current_date):
+        if not self._is_trading_day(current_date):
             return MarketClockStatus("closed", None, now, self._warmup_for(next_open.date()), next_open, next_close)
 
         open_at = self._open_for(current_date)
@@ -87,7 +121,7 @@ class MarketClock:
     def _next_open(self, now: datetime) -> datetime:
         day = now.date()
         while True:
-            if _is_weekday(day):
+            if self._is_trading_day(day):
                 open_at = self._open_for(day)
                 if now <= open_at:
                     return open_at
@@ -97,10 +131,23 @@ class MarketClock:
         return datetime.combine(day, self.open_time, self.tz)
 
     def _close_for(self, day) -> datetime:
-        return datetime.combine(day, self.close_time, self.tz)
+        return datetime.combine(day, self.calendar.close_time_for(day, self.close_time), self.tz)
 
     def _warmup_for(self, day) -> datetime:
         return self._open_for(day) - timedelta(minutes=self.pre_open_warmup_minutes)
+
+    def _is_trading_day(self, day) -> bool:
+        return _is_weekday(day) and not self.calendar.is_closed(day)
+
+
+def _parse_hhmm(value: str) -> time:
+    try:
+        hour_text, minute_text = value.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except ValueError as exc:
+        raise ValueError(f"invalid market calendar time: {value}") from exc
+    return time(hour, minute)
 
 
 def _is_weekday(day) -> bool:
