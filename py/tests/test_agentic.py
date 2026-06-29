@@ -52,7 +52,8 @@ from robinhood.agentic.mcp_client import (
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
-from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, PaperSession
+from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, DailyPlanItem, PaperSession
+from robinhood.agentic.session import _daily_plan_summary_line
 from robinhood.agentic.strategy import (
     CryptoScalpStrategy,
     DailyTrendFollowStrategy,
@@ -1395,10 +1396,28 @@ class AgenticBotTests(unittest.TestCase):
                 session.run_once()
 
         self.assertIn(
-            "[daily-plan] open_positions=SPY buy_signals=QQQ sell_signals=- "
+            "[daily-plan] open_positions=SPY buy_signals=QQQ ranked_buys=QQQ:",
+            output.getvalue(),
+        )
+        self.assertIn(
+            "top_buy=QQQ sell_signals=- "
             "blocked=QQQ:max open positions reached selected=HOLD",
             output.getvalue(),
         )
+
+    def test_daily_plan_summary_ranks_buys_by_confidence(self):
+        summary = _daily_plan_summary_line(
+            (),
+            [
+                DailyPlanItem("IWM", "BUY", 0.40, True, "approved", "no broker order: max open positions reached"),
+                DailyPlanItem("QQQ", "BUY", 0.75, True, "approved", "no broker order: max open positions reached"),
+                DailyPlanItem("TLT", "BUY", 0.75, True, "approved", "no broker order: max open positions reached"),
+            ],
+        )
+
+        self.assertIn("buy_signals=QQQ,TLT,IWM", summary)
+        self.assertIn("ranked_buys=QQQ:0.75,TLT:0.75,IWM:0.40", summary)
+        self.assertIn("top_buy=QQQ", summary)
 
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile

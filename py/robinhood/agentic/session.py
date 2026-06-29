@@ -32,6 +32,7 @@ class SessionResult:
 class DailyPlanItem:
     symbol: str
     action: str
+    confidence: float
     risk_approved: bool
     risk_reason: str
     broker_result: str
@@ -411,6 +412,7 @@ class DailyCandleBrokerSession:
                     DailyPlanItem(
                         symbol=normalized,
                         action=str(decision["action"]),
+                        confidence=float(decision.get("confidence") or 0.0),
                         risk_approved=bool(entry.risk["approved"]),
                         risk_reason=str(entry.risk["reason"]),
                         broker_result=result,
@@ -569,7 +571,13 @@ def _peak_price(candles: tuple[Candle, ...], entry_price: float | None) -> float
 
 
 def _daily_plan_summary_line(open_positions: tuple[str, ...], items: list[DailyPlanItem]) -> str:
-    buy_signals = tuple(item.symbol for item in items if item.action == "BUY" and item.risk_approved)
+    ranked_buys = tuple(
+        sorted(
+            (item for item in items if item.action == "BUY" and item.risk_approved),
+            key=lambda item: (-item.confidence, item.symbol),
+        )
+    )
+    buy_signals = tuple(item.symbol for item in ranked_buys)
     sell_signals = tuple(item.symbol for item in items if item.action == "SELL" and item.risk_approved)
     blocked = tuple(
         f"{item.symbol}:{_daily_plan_block_reason(item)}"
@@ -582,10 +590,14 @@ def _daily_plan_summary_line(open_positions: tuple[str, ...], items: list[DailyP
         if item.broker_result.startswith(("broker reviewed:", "broker submitted:", "broker filled:"))
     )
     selected_text = ",".join(selected) if selected else "HOLD"
+    ranked_buy_text = _csv_or_dash(tuple(f"{item.symbol}:{item.confidence:.2f}" for item in ranked_buys))
+    top_buy_text = ranked_buys[0].symbol if ranked_buys else "-"
     return (
         "[daily-plan] "
         f"open_positions={_csv_or_dash(open_positions)} "
         f"buy_signals={_csv_or_dash(buy_signals)} "
+        f"ranked_buys={ranked_buy_text} "
+        f"top_buy={top_buy_text} "
         f"sell_signals={_csv_or_dash(sell_signals)} "
         f"blocked={_csv_or_dash(blocked)} "
         f"selected={selected_text}"
