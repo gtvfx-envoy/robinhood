@@ -3,12 +3,19 @@ import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker, Position
 from robinhood.agentic.bot import AgenticBot
 from robinhood.agentic.cli import (
     _apply_run_daily_what_if_overrides,
+    _append_daily_daemon_completion,
+    _daily_daemon_completed_days,
+    _daily_daemon_due,
+    _daily_daemon_seconds_until_next_check,
+    _daily_daemon_trade_day,
     _extract_order_rows,
     _format_order_row,
     _journal_place_once,
@@ -18,8 +25,10 @@ from robinhood.agentic.cli import (
     _mcp_review_intent,
     _reconcile_journal_rows,
     _reconcile_order_result,
+    _run_daily_daemon_config,
     _run_daily_auto_place_orders,
     _run_daily_live_trading_enabled,
+    _parse_daily_daemon_run_time,
     build_parser,
 )
 from robinhood.agentic.config import (
@@ -53,7 +62,7 @@ from robinhood.agentic.mcp_client import (
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
-from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, DailyPlanItem, PaperSession
+from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, DailyPlanItem, PaperSession, SessionResult
 from robinhood.agentic.session import _daily_plan_summary_line
 from robinhood.agentic.strategy import (
     CryptoScalpStrategy,
@@ -287,6 +296,44 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.what_if_max_open_positions, 2)
         self.assertEqual(args.what_if_max_total_exposure_dollars, 50.0)
 
+    def test_run_daily_daemon_parser_defaults(self):
+        args = build_parser().parse_args(["run-daily-daemon", "--candle-file", "candles.json"])
+
+        self.assertEqual(args.command, "run-daily-daemon")
+        self.assertEqual(args.candle_file, Path("candles.json"))
+        self.assertEqual(args.run_at, "09:35")
+        self.assertEqual(args.timezone, "America/New_York")
+        self.assertEqual(args.poll_seconds, 60.0)
+        self.assertEqual(args.max_live_order_dollars, 5.0)
+        self.assertFalse(args.review_only)
+
+    def test_run_daily_daemon_parser_overrides(self):
+        args = build_parser().parse_args(
+            [
+                "run-daily-daemon",
+                "--candle-file",
+                "candles.json",
+                "--review-only",
+                "--run-at",
+                "10:15",
+                "--timezone",
+                "America/Chicago",
+                "--poll-seconds",
+                "5",
+                "--max-iterations",
+                "1",
+                "--max-live-order-dollars",
+                "5",
+            ]
+        )
+
+        self.assertTrue(args.review_only)
+        self.assertEqual(args.run_at, "10:15")
+        self.assertEqual(args.timezone, "America/Chicago")
+        self.assertEqual(args.poll_seconds, 5.0)
+        self.assertEqual(args.max_iterations, 1)
+        self.assertEqual(args.max_live_order_dollars, 5.0)
+
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
 
@@ -454,6 +501,59 @@ class AgenticBotTests(unittest.TestCase):
 
         with self.assertRaisesRegex(SystemExit, "0 or greater"):
             _apply_run_daily_what_if_overrides(config, args)
+
+    def test_run_daily_daemon_config_caps_max_trade_dollars(self):
+        config = AgenticConfig(risk=RiskConfig(max_trade_dollars=15.0))
+
+        updated = _run_daily_daemon_config(config, 5.0)
+
+        self.assertEqual(updated.risk.max_trade_dollars, 5.0)
+        self.assertEqual(config.risk.max_trade_dollars, 15.0)
+
+    def test_run_daily_daemon_config_does_not_raise_lower_cap(self):
+        config = AgenticConfig(risk=RiskConfig(max_trade_dollars=3.0))
+
+        updated = _run_daily_daemon_config(config, 5.0)
+
+        self.assertEqual(updated.risk.max_trade_dollars, 3.0)
+
+    def test_daily_daemon_timing_helpers(self):
+        tz = ZoneInfo("America/New_York")
+        run_time = _parse_daily_daemon_run_time("09:35")
+        before = datetime(2026, 6, 29, 9, 30, tzinfo=tz)
+        after = datetime(2026, 6, 29, 9, 36, tzinfo=tz)
+        weekend = datetime(2026, 7, 4, 10, 0, tzinfo=tz)
+
+        self.assertEqual(_daily_daemon_trade_day(before), "2026-06-29")
+        self.assertIsNone(_daily_daemon_trade_day(weekend))
+        self.assertFalse(_daily_daemon_due(before, run_time, set()))
+        self.assertTrue(_daily_daemon_due(after, run_time, set()))
+        self.assertFalse(_daily_daemon_due(after, run_time, {"2026-06-29"}))
+        self.assertEqual(_daily_daemon_seconds_until_next_check(before, run_time), 300.0)
+
+    def test_daily_daemon_completion_marker_persists_completed_day(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            journal = DecisionJournal(journal_path)
+            result = SessionResult(
+                iterations=1,
+                decisions=5,
+                skipped_quotes=0,
+                collection_errors=0,
+                paper_cash=99.0,
+                positions={},
+            )
+
+            _append_daily_daemon_completion(journal, "2026-06-29", result, review_only=False)
+            completed_days = _daily_daemon_completed_days(journal_path)
+
+        self.assertEqual(completed_days, {"2026-06-29"})
+
+    def test_daily_daemon_run_time_rejects_invalid_value(self):
+        with self.assertRaisesRegex(SystemExit, "HH:MM"):
+            _parse_daily_daemon_run_time("25:00")
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
@@ -1416,6 +1516,55 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(rows[1]["event_type"], "broker_execution")
         self.assertEqual(rows[1]["execution"]["broker_status"], "reviewed")
 
+    def test_daily_candle_broker_session_reconciles_placed_order_before_journal(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            candles = tuple(_daily_candles("SPY", [100 + index for index in range(60)]))
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("SPY",)),
+                lanes=(LaneConfig("stocks", symbols=("SPY",), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=5.0),
+            )
+            broker = _FakePlacedBroker(cash=100.0)
+
+            def reconcile(result):
+                return OrderResult(
+                    intent=result.intent,
+                    placed=result.placed,
+                    status="queued",
+                    reason=result.reason,
+                    order_id="reconciled-1",
+                    filled_quantity=result.filled_quantity,
+                    average_price=result.average_price,
+                    raw=result.raw,
+                )
+
+            session = DailyCandleBrokerSession(
+                config=config,
+                candle_collector=CandleCollector(
+                    source=StaticHistoricalMarketDataSource({"SPY": candles}),
+                    cache_path=cache_path,
+                ),
+                broker=broker,
+                order_result_reconciler=reconcile,
+            )
+
+            session.run_once()
+            rows = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(rows[1]["execution"]["broker_status"], "queued")
+        self.assertEqual(rows[1]["execution"]["order_id"], "reconciled-1")
+        self.assertEqual(rows[1]["execution"]["order_intent"]["dollar_amount"], 5.0)
+
     def test_daily_candle_broker_session_prints_portfolio_plan_summary(self):
         import contextlib
         import io
@@ -1891,6 +2040,18 @@ class _FakeReviewBroker:
             placed=False,
             status="reviewed",
             reason="live order placement disabled",
+        )
+
+
+class _FakePlacedBroker(_FakeReviewBroker):
+    def place_order(self, intent, price):
+        self.orders.append(intent)
+        return OrderResult(
+            intent=intent,
+            placed=True,
+            status="submitted",
+            reason="mcp order submitted",
+            order_id="",
         )
 
 

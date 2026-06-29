@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime, time as datetime_time
 import json
 import os
 from pathlib import Path
 import sys
+import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
@@ -18,7 +21,7 @@ from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSo
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
-from .session import BrokerSession, DailyCandleBrokerSession, PaperSession, _execution_payload
+from .session import BrokerSession, DailyCandleBrokerSession, PaperSession, SessionResult, _execution_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +134,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Review-only override for risk.max_total_exposure_dollars.",
     )
     _add_common_args(run_daily)
+
+    run_daily_daemon = subparsers.add_parser(
+        "run-daily-daemon",
+        help="Run daily-candle broker passes once per trading day.",
+    )
+    run_daily_daemon.add_argument("--candle-file", type=Path, required=True, help="JSON daily candle cache path.")
+    run_daily_daemon.add_argument("--range", default="1y", help="Yahoo chart range for daily candles.")
+    run_daily_daemon.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Force broker review mode for this daemon, even when live gates are enabled.",
+    )
+    run_daily_daemon.add_argument("--run-at", default="09:35", help="Local market time to run each day, HH:MM.")
+    run_daily_daemon.add_argument("--timezone", default="America/New_York", help="Timezone for --run-at.")
+    run_daily_daemon.add_argument("--poll-seconds", type=float, default=60.0, help="Seconds to sleep while waiting.")
+    run_daily_daemon.add_argument("--max-iterations", type=int, help="Stop after N daily passes.")
+    run_daily_daemon.add_argument(
+        "--max-live-order-dollars",
+        type=float,
+        default=5.0,
+        help="Maximum order dollars for daemon-planned live/review orders.",
+    )
+    _add_common_args(run_daily_daemon)
     return parser
 
 
@@ -266,6 +292,74 @@ def main() -> int:
                 if quantity > 0
             }
             print(f"[summary] positions={open_positions}")
+        return 0
+
+    if args.command == "run-daily-daemon":
+        broker_name = config.broker.strip().lower()
+        if broker_name != "agentic_mcp":
+            raise SystemExit("run-daily-daemon requires broker=agentic_mcp in personal config")
+        if not config.account_number:
+            raise SystemExit("run-daily-daemon with agentic_mcp broker requires account_number in personal config")
+        if args.max_live_order_dollars <= 0:
+            raise SystemExit("--max-live-order-dollars must be greater than 0")
+        if args.poll_seconds <= 0:
+            raise SystemExit("--poll-seconds must be greater than 0")
+
+        run_time = _parse_daily_daemon_run_time(args.run_at)
+        tz = _daily_daemon_timezone(args.timezone)
+        effective_journal_path = args.journal or config.journal_path
+        completed_days = _daily_daemon_completed_days(effective_journal_path)
+        passes = 0
+        print(
+            "[daemon] "
+            f"run_at={args.run_at} timezone={args.timezone} "
+            f"review_only={args.review_only} max_live_order_dollars=${args.max_live_order_dollars:.2f}"
+        )
+        while args.max_iterations is None or passes < args.max_iterations:
+            now = datetime.now(tz)
+            trade_day = _daily_daemon_trade_day(now)
+            if trade_day and _daily_daemon_due(now, run_time, completed_days):
+                effective_config = _run_daily_daemon_config(config, args.max_live_order_dollars)
+                bot = AgenticBot(config=effective_config)
+                if args.journal:
+                    bot.journal.path = args.journal
+                client = _build_mcp_client(effective_config)
+                broker = AgenticMcpEquityBroker(
+                    account_number=effective_config.account_number,
+                    client=client,
+                    live_trading_enabled=_run_daily_live_trading_enabled(effective_config, args.review_only),
+                    auto_place_orders=_run_daily_auto_place_orders(effective_config, args.review_only),
+                    max_live_order_dollars=args.max_live_order_dollars,
+                )
+                session = DailyCandleBrokerSession(
+                    config=effective_config,
+                    candle_collector=CandleCollector(YahooDailyCandleSource(), args.candle_file),
+                    broker=broker,
+                    bot=bot,
+                    candle_range=args.range,
+                    order_result_reconciler=lambda result: _reconcile_order_result(
+                        effective_config.account_number,
+                        client,
+                        result,
+                    ),
+                )
+                result = session.run_once()
+                completed_days.add(trade_day)
+                _append_daily_daemon_completion(bot.journal, trade_day, result, args.review_only)
+                passes += 1
+                print(
+                    "[daemon-summary] "
+                    f"trade_day={trade_day} passes={passes} decisions={result.decisions} "
+                    f"skipped_candles={result.skipped_quotes} collection_errors={result.collection_errors} "
+                    f"account_cash=${result.paper_cash:.2f}"
+                )
+                continue
+
+            if args.max_iterations is not None and passes >= args.max_iterations:
+                break
+            wait = min(args.poll_seconds, _daily_daemon_seconds_until_next_check(now, run_time))
+            print(f"[daemon] waiting {wait:.1f}s for next daily run check")
+            time.sleep(wait)
         return 0
 
     if args.command == "backtest":
@@ -668,6 +762,81 @@ def _apply_run_daily_what_if_overrides(config: AgenticConfig, args) -> AgenticCo
     if max_total_exposure_dollars is not None:
         risk = replace(risk, max_total_exposure_dollars=max_total_exposure_dollars)
     return replace(config, risk=risk)
+
+
+def _run_daily_daemon_config(config: AgenticConfig, max_live_order_dollars: float) -> AgenticConfig:
+    risk = replace(
+        config.risk,
+        max_trade_dollars=min(config.risk.max_trade_dollars, max_live_order_dollars),
+    )
+    return replace(config, risk=risk)
+
+
+def _parse_daily_daemon_run_time(value: str) -> datetime_time:
+    try:
+        hour_text, minute_text = value.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (ValueError, AttributeError) as exc:
+        raise SystemExit("--run-at must use HH:MM") from exc
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise SystemExit("--run-at must use HH:MM")
+    return datetime_time(hour=hour, minute=minute)
+
+
+def _daily_daemon_timezone(value: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise SystemExit(f"unknown timezone: {value}") from exc
+
+
+def _daily_daemon_trade_day(now: datetime) -> str | None:
+    if now.weekday() >= 5:
+        return None
+    return now.date().isoformat()
+
+
+def _daily_daemon_due(now: datetime, run_time: datetime_time, completed_days: set[str]) -> bool:
+    trade_day = _daily_daemon_trade_day(now)
+    if trade_day is None or trade_day in completed_days:
+        return False
+    return now.time() >= run_time
+
+
+def _daily_daemon_seconds_until_next_check(now: datetime, run_time: datetime_time) -> float:
+    if now.weekday() >= 5 or now.time() >= run_time:
+        return 60.0
+    run_at = now.replace(hour=run_time.hour, minute=run_time.minute, second=0, microsecond=0)
+    return max(1.0, (run_at - now).total_seconds())
+
+
+def _daily_daemon_completed_days(journal_path: str | Path) -> set[str]:
+    return {
+        str(row["trade_day"])
+        for row in _read_journal_rows(journal_path)
+        if row.get("event_type") == "daily_daemon_pass" and row.get("trade_day")
+    }
+
+
+def _append_daily_daemon_completion(
+    journal: DecisionJournal,
+    trade_day: str,
+    result: SessionResult,
+    review_only: bool,
+) -> None:
+    journal.append_event(
+        {
+            "event_type": "daily_daemon_pass",
+            "source": "run-daily-daemon",
+            "trade_day": trade_day,
+            "review_only": review_only,
+            "decisions": result.decisions,
+            "skipped_candles": result.skipped_quotes,
+            "collection_errors": result.collection_errors,
+            "account_cash": result.paper_cash,
+        }
+    )
 
 
 def _build_mcp_client(config) -> StreamableHttpMcpToolClient:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 import time
+from typing import Callable
 
 from .bot import AgenticBot
 from .broker import Broker, OrderIntent, OrderResult
@@ -346,12 +347,14 @@ class DailyCandleBrokerSession:
         broker: Broker,
         bot: AgenticBot | None = None,
         candle_range: str = "1y",
+        order_result_reconciler: Callable[[OrderResult], OrderResult] | None = None,
     ):
         self.config = config
         self.candle_collector = candle_collector
         self.broker = broker
         self.bot = bot or AgenticBot(config)
         self.candle_range = candle_range
+        self.order_result_reconciler = order_result_reconciler
         self._daily_trade_count = 0
         self._daily_trade_day = _current_trade_day()
 
@@ -456,6 +459,8 @@ class DailyCandleBrokerSession:
             return f"no broker order: {plan.reason}"
 
         result = self.broker.place_order(plan.intent, price)
+        if result.placed and self.order_result_reconciler is not None:
+            result = self.order_result_reconciler(result)
         self.bot.journal.append_execution(entry, _execution_payload(result))
         if result.status in {"reviewed", "submitted", "filled"} or result.placed:
             self._daily_trade_count += 1
