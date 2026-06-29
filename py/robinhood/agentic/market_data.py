@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-import json
 from pathlib import Path
-from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -105,7 +105,9 @@ class YahooDailyCandleSource(HistoricalMarketDataSource):
 
     def get_daily_candles(self, symbol: str, range_: str = "1y") -> tuple[Candle, ...]:
         yahoo_symbol = _to_yahoo_symbol(symbol)
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol)}?range={quote(range_)}&interval=1d"
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol)}?range={quote(range_)}&interval=1d"
+        )
         request = Request(
             url,
             headers={
@@ -240,7 +242,9 @@ class CandleCollector:
         self.cache_path = Path(cache_path)
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def collect(self, symbols: Iterable[str], range_: str = "1y") -> tuple[dict[str, tuple[Candle, ...]], dict[str, str]]:
+    def collect(
+        self, symbols: Iterable[str], range_: str = "1y"
+    ) -> tuple[dict[str, tuple[Candle, ...]], dict[str, str]]:
         candles: dict[str, tuple[Candle, ...]] = {}
         errors: dict[str, str] = {}
 

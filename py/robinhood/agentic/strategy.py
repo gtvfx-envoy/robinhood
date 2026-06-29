@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .indicators import atr, ema, percent_change
@@ -17,7 +17,7 @@ class QuoteSnapshot:
     symbol: str
     price: float
     previous_close: float | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)
@@ -184,8 +184,8 @@ class DailyTrendFollowStrategy:
 
         close = closes[-1]
         previous_close = closes[-2]
-        short_ema = ema(closes[-self.short_period:], self.short_period)
-        long_ema = ema(closes[-self.long_period:], self.long_period)
+        short_ema = ema(closes[-self.short_period :], self.short_period)
+        long_ema = ema(closes[-self.long_period :], self.long_period)
         trend_pct = percent_change(short_ema, long_ema)
         day_move_pct = percent_change(close, previous_close)
         atr_value = atr(highs, lows, closes, self.atr_period)
@@ -339,8 +339,8 @@ class CryptoScalpStrategy:
                 reason=f"warming up crypto scalp history {len(prices)}/{required}",
             )
 
-        fast = _ema(list(prices)[-self.fast_period:])
-        slow = _ema(list(prices)[-self.slow_period:])
+        fast = _ema(list(prices)[-self.fast_period :])
+        slow = _ema(list(prices)[-self.slow_period :])
         rsi = _rsi(list(prices), self.rsi_period)
         previous = list(prices)[-2]
         tick_move_pct = ((quote.price - previous) / previous) * 100.0 if previous > 0 else 0.0
@@ -432,10 +432,10 @@ def _rsi(values: list[float], period: int) -> float:
     if len(values) < period + 1:
         return 50.0
 
-    window = values[-(period + 1):]
+    window = values[-(period + 1) :]
     gains = []
     losses = []
-    for previous, current in zip(window, window[1:]):
+    for previous, current in zip(window, window[1:], strict=False):
         delta = current - previous
         if delta >= 0:
             gains.append(delta)

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_SYMBOLS_PATH = Path(__file__).parent / "config" / "symbols.cfg"
 PERSONAL_CONFIG_FILENAME = "rh_agentic.json"
@@ -157,11 +156,7 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
     path = path or get_personal_config_path()
     payload = _load_optional_json(path)
     return PersonalConfig(
-        account_number=str(
-            payload.get("account_number")
-            or payload.get("DEFAULT_ACCOUNT_NUMBER")
-            or ""
-        ),
+        account_number=str(payload.get("account_number") or payload.get("DEFAULT_ACCOUNT_NUMBER") or ""),
         dry_run=bool(payload.get("dry_run", True)),
         broker=str(payload.get("broker", "paper")),
         mcp_url=str(payload.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),

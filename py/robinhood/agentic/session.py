@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from .bot import AgenticBot
 from .broker import Broker, OrderIntent, OrderResult
@@ -80,10 +80,7 @@ class PaperSession:
                     )
                     quotes, errors = self._collect_lane_quotes(lane)
                     collection_errors += len(errors)
-                    print(
-                        f"[poll] lane={lane.name} collected={len(quotes)} "
-                        f"errors={len(errors)}"
-                    )
+                    print(f"[poll] lane={lane.name} collected={len(quotes)} errors={len(errors)}")
                     for symbol, error in errors.items():
                         print(f"{lane.name}/{symbol}: SKIP - {error}")
 
@@ -162,10 +159,7 @@ class PaperSession:
             return ()
 
         next_due = min(self._lane_next_run.values())
-        return tuple(
-            name for name, due_at in self._lane_next_run.items()
-            if abs(due_at - next_due) < 0.001
-        )
+        return tuple(name for name, due_at in self._lane_next_run.items() if abs(due_at - next_due) < 0.001)
 
     def _sleep_until_next_poll(self) -> None:
         seconds = self._sleep_seconds()
@@ -216,10 +210,7 @@ class BrokerSession:
                     )
                     quotes, errors = self._collect_lane_quotes(lane)
                     collection_errors += len(errors)
-                    print(
-                        f"[poll] lane={lane.name} collected={len(quotes)} "
-                        f"errors={len(errors)}"
-                    )
+                    print(f"[poll] lane={lane.name} collected={len(quotes)} errors={len(errors)}")
                     for symbol, error in errors.items():
                         print(f"{lane.name}/{symbol}: SKIP - {error}")
 
@@ -322,10 +313,7 @@ class BrokerSession:
             return ()
 
         next_due = min(self._lane_next_run.values())
-        return tuple(
-            name for name, due_at in self._lane_next_run.items()
-            if abs(due_at - next_due) < 0.001
-        )
+        return tuple(name for name, due_at in self._lane_next_run.items() if abs(due_at - next_due) < 0.001)
 
     def _sleep_until_next_poll(self) -> None:
         seconds = self._sleep_seconds()
@@ -368,9 +356,7 @@ class DailyCandleBrokerSession:
         )
         starting_snapshot = self.broker.get_account_snapshot()
         starting_positions = tuple(
-            symbol
-            for symbol, position in sorted(starting_snapshot.positions.items())
-            if position.is_open
+            symbol for symbol, position in sorted(starting_snapshot.positions.items()) if position.is_open
         )
         plan_items: list[DailyPlanItem] = []
 
@@ -381,10 +367,7 @@ class DailyCandleBrokerSession:
             )
             candles_by_symbol, errors = self.candle_collector.collect(lane.symbols, range_=self.candle_range)
             collection_errors += len(errors)
-            print(
-                f"[daily] lane={lane.name} collected={len(candles_by_symbol)} "
-                f"errors={len(errors)}"
-            )
+            print(f"[daily] lane={lane.name} collected={len(candles_by_symbol)} errors={len(errors)}")
             for symbol, error in errors.items():
                 print(f"{lane.name}/{symbol}: SKIP - {error}")
 
@@ -495,7 +478,7 @@ def _sleep_with_progress(seconds: float, label: str, width: int = 24) -> None:
 
 
 def _current_trade_day() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _is_approved_trade(entry: JournalEntry) -> bool:
@@ -617,7 +600,7 @@ def _daily_plan_block_reason(item: DailyPlanItem) -> str:
         return item.risk_reason
     prefix = "no broker order: "
     if item.broker_result.startswith(prefix):
-        return item.broker_result[len(prefix):]
+        return item.broker_result[len(prefix) :]
     return ""
 
 

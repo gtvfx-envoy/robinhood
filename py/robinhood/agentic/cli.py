@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
-from datetime import datetime, time as datetime_time
 import json
 import os
-from pathlib import Path
 import sys
 import time
+from dataclasses import replace
+from datetime import datetime
+from datetime import time as datetime_time
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
 from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
-from .config import AgenticConfig, LIVE_ORDER_CONFIRMATION, get_personal_config_path, load_config
+from .config import LIVE_ORDER_CONFIRMATION, AgenticConfig, get_personal_config_path, load_config
 from .journal import DecisionJournal
 from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
@@ -241,11 +242,7 @@ def main() -> int:
             f"{summary_cash_label}=${result.paper_cash:.2f} interrupted={result.interrupted}"
         )
         if result.positions:
-            open_positions = {
-                symbol: quantity
-                for symbol, quantity in result.positions.items()
-                if quantity > 0
-            }
+            open_positions = {symbol: quantity for symbol, quantity in result.positions.items() if quantity > 0}
             print(f"[summary] paper_positions={open_positions}")
         return 0
 
@@ -286,11 +283,7 @@ def main() -> int:
             f"account_cash=${result.paper_cash:.2f}"
         )
         if result.positions:
-            open_positions = {
-                symbol: quantity
-                for symbol, quantity in result.positions.items()
-                if quantity > 0
-            }
+            open_positions = {symbol: quantity for symbol, quantity in result.positions.items() if quantity > 0}
             print(f"[summary] positions={open_positions}")
         return 0
 
@@ -337,10 +330,10 @@ def main() -> int:
                     broker=broker,
                     bot=bot,
                     candle_range=args.range,
-                    order_result_reconciler=lambda result: _reconcile_order_result(
-                        effective_config.account_number,
-                        client,
-                        result,
+                    order_result_reconciler=(
+                        lambda result, account_number=effective_config.account_number, mcp_client=client: (
+                            _reconcile_order_result(account_number, mcp_client, result)
+                        )
                     ),
                 )
                 result = session.run_once()
@@ -370,35 +363,24 @@ def main() -> int:
         source = YahooDailyCandleSource()
         risk_overrides = {
             "min_order_dollars": (
-                args.min_order_dollars
-                if args.min_order_dollars is not None
-                else config.risk.min_order_dollars
+                args.min_order_dollars if args.min_order_dollars is not None else config.risk.min_order_dollars
             ),
             "max_trade_dollars": (
-                args.max_trade_dollars
-                if args.max_trade_dollars is not None
-                else config.risk.max_trade_dollars
+                args.max_trade_dollars if args.max_trade_dollars is not None else config.risk.max_trade_dollars
             ),
             "min_cash_reserve": (
-                args.min_cash_reserve
-                if args.min_cash_reserve is not None
-                else config.risk.min_cash_reserve
+                args.min_cash_reserve if args.min_cash_reserve is not None else config.risk.min_cash_reserve
             ),
         }
         if args.portfolio:
-            candles_by_symbol = {
-                symbol: source.get_daily_candles(symbol, range_=args.range)
-                for symbol in symbols
-            }
+            candles_by_symbol = {symbol: source.get_daily_candles(symbol, range_=args.range) for symbol in symbols}
             result = run_daily_trend_portfolio_backtest(
                 candles_by_symbol,
                 starting_cash=args.starting_cash,
                 target_dollars=args.target_dollars,
                 slippage_pct=args.slippage_pct,
                 max_open_positions=(
-                    args.max_open_positions
-                    if args.max_open_positions is not None
-                    else config.risk.max_open_positions
+                    args.max_open_positions if args.max_open_positions is not None else config.risk.max_open_positions
                 ),
                 max_new_buys_per_day=(
                     args.max_new_buys_per_day
@@ -406,9 +388,7 @@ def main() -> int:
                     else config.risk.max_new_buys_per_day
                 ),
                 max_daily_trades=(
-                    args.max_daily_trades
-                    if args.max_daily_trades is not None
-                    else config.risk.max_daily_trades
+                    args.max_daily_trades if args.max_daily_trades is not None else config.risk.max_daily_trades
                 ),
                 max_total_exposure_dollars=(
                     args.max_total_exposure_dollars

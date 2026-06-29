@@ -57,9 +57,7 @@ def run_daily_trend_backtest(
         raise ValueError("backtest requires at least one candle")
 
     normalized = symbol.upper()
-    strategy = strategy or DailyTrendFollowStrategy(
-        target_dollars=min(target_dollars, max_trade_dollars)
-    )
+    strategy = strategy or DailyTrendFollowStrategy(target_dollars=min(target_dollars, max_trade_dollars))
     cash = starting_cash
     position = _Position()
     trades: list[BacktestTrade] = []
@@ -230,9 +228,7 @@ def run_daily_trend_portfolio_backtest(
 
             current_exposure = _portfolio_exposure(positions, closes)
             exposure_room = (
-                max_total_exposure_dollars - current_exposure
-                if max_total_exposure_dollars > 0
-                else starting_cash
+                max_total_exposure_dollars - current_exposure if max_total_exposure_dollars > 0 else starting_cash
             )
             trade_dollars = min(
                 float(decision.target_dollars or target_dollars),

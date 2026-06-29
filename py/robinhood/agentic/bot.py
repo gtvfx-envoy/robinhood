@@ -6,8 +6,8 @@ from pathlib import Path
 
 from .config import AgenticConfig
 from .journal import DecisionJournal, JournalEntry
-from .risk import RiskManager
 from .market_data import Candle
+from .risk import RiskManager
 from .strategy import QuoteSnapshot, SimpleMomentumStrategy, build_strategy
 
 
@@ -21,9 +21,7 @@ class AgenticBot:
         journal: DecisionJournal | None = None,
     ):
         self.config = config
-        self.strategy = strategy or SimpleMomentumStrategy(
-            target_dollars=min(10.0, config.risk.max_trade_dollars)
-        )
+        self.strategy = strategy or SimpleMomentumStrategy(target_dollars=min(10.0, config.risk.max_trade_dollars))
         self._strategies = {"simple_momentum": self.strategy}
         self.risk = RiskManager(config)
         self.journal = journal or DecisionJournal(Path(config.journal_path))

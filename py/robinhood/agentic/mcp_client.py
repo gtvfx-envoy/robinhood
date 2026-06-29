@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import queue
 import threading
+import webbrowser
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-import webbrowser
 
 
 class McpClientUnavailable(RuntimeError):
@@ -293,16 +293,13 @@ def decode_mcp_tools_result(result: Any) -> list[dict[str, Any]]:
             payload = {
                 "name": getattr(tool, "name", ""),
                 "description": getattr(tool, "description", ""),
-                "inputSchema": getattr(tool, "inputSchema", None)
-                or getattr(tool, "input_schema", None),
+                "inputSchema": getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None),
             }
         decoded.append(
             {
                 "name": str(payload.get("name") or ""),
                 "description": str(payload.get("description") or ""),
-                "input_schema": payload.get("inputSchema")
-                or payload.get("input_schema")
-                or {},
+                "input_schema": payload.get("inputSchema") or payload.get("input_schema") or {},
             }
         )
     return decoded

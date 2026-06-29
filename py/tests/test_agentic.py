@@ -1,17 +1,17 @@
 import json
 import os
-from pathlib import Path
 import unittest
-from unittest.mock import patch
 from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from robinhood.agentic.backtest import run_daily_trend_backtest, run_daily_trend_portfolio_backtest
-from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker, Position
 from robinhood.agentic.bot import AgenticBot
+from robinhood.agentic.broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview, PaperBroker, Position
 from robinhood.agentic.cli import (
-    _apply_run_daily_what_if_overrides,
     _append_daily_daemon_completion,
+    _apply_run_daily_what_if_overrides,
     _daily_daemon_completed_days,
     _daily_daemon_due,
     _daily_daemon_seconds_until_next_check,
@@ -23,23 +23,23 @@ from robinhood.agentic.cli import (
     _live_readiness_failures,
     _mcp_orders_arguments,
     _mcp_review_intent,
+    _parse_daily_daemon_run_time,
     _reconcile_journal_rows,
     _reconcile_order_result,
-    _run_daily_daemon_config,
     _run_daily_auto_place_orders,
+    _run_daily_daemon_config,
     _run_daily_live_trading_enabled,
-    _parse_daily_daemon_run_time,
     build_parser,
 )
 from robinhood.agentic.config import (
-    AgenticConfig,
     LIVE_ORDER_CONFIRMATION,
+    AgenticConfig,
     LaneConfig,
     RiskConfig,
     SymbolConfig,
     get_personal_config_path,
-    load_lanes,
     load_config,
+    load_lanes,
     load_personal_config,
     load_symbols,
 )
@@ -62,8 +62,14 @@ from robinhood.agentic.mcp_client import (
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
-from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, DailyPlanItem, PaperSession, SessionResult
-from robinhood.agentic.session import _daily_plan_summary_line
+from robinhood.agentic.session import (
+    BrokerSession,
+    DailyCandleBrokerSession,
+    DailyPlanItem,
+    PaperSession,
+    SessionResult,
+    _daily_plan_summary_line,
+)
 from robinhood.agentic.strategy import (
     CryptoScalpStrategy,
     DailyTrendFollowStrategy,
@@ -857,11 +863,7 @@ class AgenticBotTests(unittest.TestCase):
         client = _FakeMcpClient(
             {
                 "get_portfolio": {"buying_power": "100.00"},
-                "get_equity_positions": {
-                    "results": [
-                        {"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}
-                    ]
-                },
+                "get_equity_positions": {"results": [{"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}]},
             }
         )
         broker = AgenticMcpEquityBroker("123", client)
@@ -882,11 +884,7 @@ class AgenticBotTests(unittest.TestCase):
                     "guide": {},
                 },
                 "get_equity_positions": {
-                    "data": {
-                        "positions": [
-                            {"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}
-                        ]
-                    },
+                    "data": {"positions": [{"symbol": "SPY", "quantity": "0.1", "average_cost": "100.0"}]},
                     "guide": {},
                 },
             }
@@ -1096,9 +1094,7 @@ class AgenticBotTests(unittest.TestCase):
     def test_agentic_mcp_broker_blocks_untradable_symbol(self):
         client = _FakeMcpClient(
             {
-                "get_equity_tradability": {
-                    "results": [{"symbol": "SPY", "tradable": False}]
-                },
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": False}]},
                 "review_equity_order": {"status": "approved"},
             }
         )
@@ -1410,10 +1406,7 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             result = session.run(max_iterations=1)
-            rows = [
-                json.loads(line)
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-            ]
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(result.decisions, 1)
         self.assertEqual(result.paper_cash, 100.0)
@@ -1456,10 +1449,7 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             session.run(max_iterations=1)
-            rows = [
-                json.loads(line)
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-            ]
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(len(broker.orders), 0)
         self.assertEqual(rows[1]["event_type"], "broker_execution")
@@ -1500,10 +1490,7 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             result = session.run_once()
-            rows = [
-                json.loads(line)
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-            ]
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(result.iterations, 1)
         self.assertEqual(result.decisions, 1)
@@ -1556,10 +1543,7 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             session.run_once()
-            rows = [
-                json.loads(line)
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-            ]
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(rows[1]["execution"]["broker_status"], "queued")
         self.assertEqual(rows[1]["execution"]["order_id"], "reconciled-1")
@@ -1615,8 +1599,7 @@ class AgenticBotTests(unittest.TestCase):
             output.getvalue(),
         )
         self.assertIn(
-            "top_buy=QQQ sell_signals=- "
-            "blocked=QQQ:max open positions reached selected=HOLD",
+            "top_buy=QQQ sell_signals=- blocked=QQQ:max open positions reached selected=HOLD",
             output.getvalue(),
         )
 
@@ -1665,8 +1648,12 @@ class AgenticBotTests(unittest.TestCase):
         summary = _daily_plan_summary_line(
             (),
             [
-                DailyPlanItem("IWM", "BUY", 0.40, "fallback", True, "approved", "no broker order: max open positions reached"),
-                DailyPlanItem("QQQ", "BUY", 0.75, "fallback", True, "approved", "no broker order: max open positions reached"),
+                DailyPlanItem(
+                    "IWM", "BUY", 0.40, "fallback", True, "approved", "no broker order: max open positions reached"
+                ),
+                DailyPlanItem(
+                    "QQQ", "BUY", 0.75, "fallback", True, "approved", "no broker order: max open positions reached"
+                ),
             ],
         )
 
@@ -1702,9 +1689,7 @@ class AgenticBotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             cache_path = Path(tmp_dir) / "quotes.json"
             collector = QuoteCollector(
-                source=StaticMarketDataSource(
-                    {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
-                ),
+                source=StaticMarketDataSource({"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}),
                 cache_path=cache_path,
             )
 
@@ -1866,9 +1851,7 @@ class AgenticBotTests(unittest.TestCase):
                 config=config,
                 quote_provider=JsonQuoteProvider(cache_path),
                 quote_collector=QuoteCollector(
-                    source=StaticMarketDataSource(
-                        {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
-                    ),
+                    source=StaticMarketDataSource({"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}),
                     cache_path=cache_path,
                 ),
                 show_progress=False,
@@ -1936,10 +1919,7 @@ class AgenticBotTests(unittest.TestCase):
             )
 
             result = session.run(max_iterations=1)
-            rows = [
-                json.loads(line)
-                for line in journal_path.read_text(encoding="utf-8").splitlines()
-            ]
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(result.decisions, 2)
         self.assertAlmostEqual(result.paper_cash, 90.0)
@@ -1976,9 +1956,7 @@ class AgenticBotTests(unittest.TestCase):
                 config=config,
                 quote_provider=JsonQuoteProvider(cache_path),
                 quote_collector=QuoteCollector(
-                    source=StaticMarketDataSource(
-                        {"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}
-                    ),
+                    source=StaticMarketDataSource({"AAPL": QuoteSnapshot("AAPL", price=102, previous_close=100)}),
                     cache_path=cache_path,
                 ),
                 show_progress=False,
@@ -1990,6 +1968,7 @@ class AgenticBotTests(unittest.TestCase):
         self.assertTrue(result.interrupted)
         self.assertEqual(result.iterations, 1)
         self.assertEqual(result.decisions, 1)
+
 
 def _daily_candles(symbol, closes):
     from datetime import date, timedelta

@@ -41,9 +41,7 @@ class AgenticMcpEquityBroker(Broker):
         self._live_orders_submitted = 0
 
     def get_account_snapshot(self) -> AccountSnapshot:
-        portfolio = _as_mapping(
-            self.client.call_tool("get_portfolio", {"account_number": self.account_number})
-        )
+        portfolio = _as_mapping(self.client.call_tool("get_portfolio", {"account_number": self.account_number}))
         positions_payload = _as_mapping(
             self.client.call_tool("get_equity_positions", {"account_number": self.account_number})
         )
@@ -176,10 +174,7 @@ class AgenticMcpEquityBroker(Broker):
         if dollars is None:
             return ""
         if dollars > self.max_live_order_dollars:
-            return (
-                "live order exceeds max_live_order_dollars "
-                f"(${dollars:.2f} > ${self.max_live_order_dollars:.2f})"
-            )
+            return f"live order exceeds max_live_order_dollars (${dollars:.2f} > ${self.max_live_order_dollars:.2f})"
         return ""
 
     def _live_order_fuse_reason(self) -> str:
@@ -187,8 +182,7 @@ class AgenticMcpEquityBroker(Broker):
             return "max_live_orders_per_process must be greater than 0"
         if self._live_orders_submitted >= self.max_live_orders_per_process:
             return (
-                "live order fuse tripped "
-                f"({self._live_orders_submitted}/{self.max_live_orders_per_process} submitted)"
+                f"live order fuse tripped ({self._live_orders_submitted}/{self.max_live_orders_per_process} submitted)"
             )
         return ""
 

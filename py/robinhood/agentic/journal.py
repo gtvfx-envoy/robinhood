@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import json
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ class DecisionJournal:
     ) -> JournalEntry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         entry = JournalEntry(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             dry_run=dry_run,
             quote=asdict(quote),
             decision=asdict(decision),
@@ -50,21 +50,23 @@ class DecisionJournal:
     def append_execution(self, entry: JournalEntry, execution: dict[str, Any]) -> None:
         """Append a broker execution/review event linked to a decision entry."""
 
-        self.append_event({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_type": "broker_execution",
-            "decision_timestamp": entry.timestamp,
-            "dry_run": entry.dry_run,
-            "symbol": entry.decision.get("symbol"),
-            "action": entry.decision.get("action"),
-            "execution": execution,
-        })
+        self.append_event(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "event_type": "broker_execution",
+                "decision_timestamp": entry.timestamp,
+                "dry_run": entry.dry_run,
+                "symbol": entry.decision.get("symbol"),
+                "action": entry.decision.get("action"),
+                "execution": execution,
+            }
+        )
 
     def append_event(self, event: dict[str, Any]) -> None:
         """Append a raw audit event."""
 
         event = dict(event)
-        event.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        event.setdefault("timestamp", datetime.now(UTC).isoformat())
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(_json_safe(event), sort_keys=True))
