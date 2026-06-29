@@ -14,11 +14,11 @@ from .bot import AgenticBot
 from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
 from .config import AgenticConfig, LIVE_ORDER_CONFIRMATION, get_personal_config_path, load_config
 from .journal import DecisionJournal
-from .market_data import QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
+from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
-from .session import BrokerSession, PaperSession, _execution_payload
+from .session import BrokerSession, DailyCandleBrokerSession, PaperSession, _execution_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable countdown progress while waiting for the next poll.",
     )
     _add_common_args(run)
+
+    run_daily = subparsers.add_parser(
+        "run-daily",
+        help="Run one daily-candle broker pass for daily trend lanes.",
+    )
+    run_daily.add_argument("--candle-file", type=Path, required=True, help="JSON daily candle cache path.")
+    run_daily.add_argument("--range", default="1y", help="Yahoo chart range for daily candles.")
+    _add_common_args(run_daily)
     return parser
 
 
@@ -198,6 +206,43 @@ def main() -> int:
                 if quantity > 0
             }
             print(f"[summary] paper_positions={open_positions}")
+        return 0
+
+    if args.command == "run-daily":
+        broker_name = config.broker.strip().lower()
+        if broker_name != "agentic_mcp":
+            raise SystemExit("run-daily requires broker=agentic_mcp in personal config")
+        if not config.account_number:
+            raise SystemExit("run-daily with agentic_mcp broker requires account_number in personal config")
+
+        broker = AgenticMcpEquityBroker(
+            account_number=config.account_number,
+            client=_build_mcp_client(config),
+            live_trading_enabled=_live_order_gates_enabled(config),
+            auto_place_orders=config.auto_place_orders,
+            max_live_order_dollars=config.risk.max_trade_dollars,
+        )
+        session = DailyCandleBrokerSession(
+            config=config,
+            candle_collector=CandleCollector(YahooDailyCandleSource(), args.candle_file),
+            broker=broker,
+            bot=bot,
+            candle_range=args.range,
+        )
+        result = session.run_once()
+        print(
+            "[summary] "
+            f"iterations={result.iterations} decisions={result.decisions} "
+            f"skipped_candles={result.skipped_quotes} collection_errors={result.collection_errors} "
+            f"account_cash=${result.paper_cash:.2f}"
+        )
+        if result.positions:
+            open_positions = {
+                symbol: quantity
+                for symbol, quantity in result.positions.items()
+                if quantity > 0
+            }
+            print(f"[summary] positions={open_positions}")
         return 0
 
     if args.command == "backtest":

@@ -11,7 +11,7 @@ from .broker import Broker, OrderIntent, OrderResult
 from .config import AgenticConfig, LaneConfig
 from .execution import plan_order_intent
 from .journal import JournalEntry
-from .market_data import QuoteCollector
+from .market_data import Candle, CandleCollector, QuoteCollector
 from .paper import PaperAccount
 from .quotes import QuoteProvider, QuoteUnavailable
 from .strategy import Decision
@@ -324,6 +324,117 @@ class BrokerSession:
         _sleep_with_progress(seconds, f"next poll: {lanes}")
 
 
+class DailyCandleBrokerSession:
+    """Evaluate daily-candle strategies and route approved intents to a broker."""
+
+    def __init__(
+        self,
+        config: AgenticConfig,
+        candle_collector: CandleCollector,
+        broker: Broker,
+        bot: AgenticBot | None = None,
+        candle_range: str = "1y",
+    ):
+        self.config = config
+        self.candle_collector = candle_collector
+        self.broker = broker
+        self.bot = bot or AgenticBot(config)
+        self.candle_range = candle_range
+        self._daily_trade_count = 0
+        self._daily_trade_day = _current_trade_day()
+
+    def run_once(self) -> SessionResult:
+        decisions = 0
+        skipped_quotes = 0
+        collection_errors = 0
+        lanes = self.config.lanes or (LaneConfig("stocks", self.config.symbols.stocks),)
+        eligible_lanes = tuple(
+            lane for lane in lanes if lane.strategy.strip().lower() in {"daily_trend_follow", "daily_trend"}
+        )
+
+        for lane in eligible_lanes:
+            print(
+                f"[daily] lane={lane.name} symbols={len(lane.symbols)} "
+                f"strategy={lane.strategy} range={self.candle_range}"
+            )
+            candles_by_symbol, errors = self.candle_collector.collect(lane.symbols, range_=self.candle_range)
+            collection_errors += len(errors)
+            print(
+                f"[daily] lane={lane.name} collected={len(candles_by_symbol)} "
+                f"errors={len(errors)}"
+            )
+            for symbol, error in errors.items():
+                print(f"{lane.name}/{symbol}: SKIP - {error}")
+
+            snapshot = self.broker.get_account_snapshot()
+            for symbol in lane.symbols:
+                normalized = symbol.upper()
+                candles = candles_by_symbol.get(normalized)
+                if not candles:
+                    if normalized not in errors:
+                        skipped_quotes += 1
+                        print(f"{lane.name}/{symbol}: SKIP - missing daily candles")
+                    continue
+
+                self._reset_daily_trade_count_if_needed()
+                position = snapshot.positions.get(normalized)
+                entry = self.bot.analyze_candles(
+                    normalized,
+                    candles,
+                    daily_trade_count=self._daily_trade_count,
+                    strategy_name=lane.strategy,
+                    has_position=bool(position and position.is_open),
+                    entry_price=position.average_cost if position else None,
+                    peak_price=_peak_price(candles, position.average_cost if position else None),
+                )
+                decisions += 1
+                result = self._apply_broker(entry, candles[-1].close)
+                decision = entry.decision
+                print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {result}")
+                snapshot = self.broker.get_account_snapshot()
+
+        snapshot = self.broker.get_account_snapshot()
+        return SessionResult(
+            iterations=1,
+            decisions=decisions,
+            skipped_quotes=skipped_quotes,
+            collection_errors=collection_errors,
+            paper_cash=snapshot.cash,
+            positions={symbol: position.quantity for symbol, position in snapshot.positions.items()},
+        )
+
+    def _apply_broker(self, entry: JournalEntry, price: float) -> str:
+        if not _is_approved_trade(entry):
+            return "no broker review"
+
+        decision = _decision_from_entry(entry)
+        snapshot = self.broker.get_account_snapshot()
+        plan = plan_order_intent(decision, snapshot, self.config.risk, price)
+        if not plan.approved or plan.intent is None:
+            self.bot.journal.append_execution(
+                entry,
+                {
+                    "broker_status": "planned_rejected",
+                    "broker_reason": plan.reason,
+                    "order_intent": _intent_payload(plan.intent),
+                    "placed": False,
+                },
+            )
+            return f"no broker order: {plan.reason}"
+
+        result = self.broker.place_order(plan.intent, price)
+        self.bot.journal.append_execution(entry, _execution_payload(result))
+        if result.status in {"reviewed", "submitted", "filled"} or result.placed:
+            self._daily_trade_count += 1
+        return f"broker {result.status}: {result.reason}"
+
+    def _reset_daily_trade_count_if_needed(self) -> None:
+        trade_day = _current_trade_day()
+        if trade_day != self._daily_trade_day:
+            self._daily_trade_day = trade_day
+            self._daily_trade_count = 0
+
+
 def _sleep_with_progress(seconds: float, label: str, width: int = 24) -> None:
     if seconds <= 0:
         return
@@ -420,3 +531,10 @@ def _review_summary(raw: object) -> dict[str, object]:
     if alerts:
         summary["alerts"] = alerts
     return summary
+
+
+def _peak_price(candles: tuple[Candle, ...], entry_price: float | None) -> float | None:
+    if entry_price is None:
+        return None
+    recent_high = max((candle.high for candle in candles), default=entry_price)
+    return max(entry_price, recent_high)

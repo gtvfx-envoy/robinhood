@@ -50,7 +50,7 @@ from robinhood.agentic.mcp_client import (
 from robinhood.agentic.paper import PaperAccount
 from robinhood.agentic.quotes import JsonQuoteProvider, QuoteUnavailable
 from robinhood.agentic.risk import RiskManager
-from robinhood.agentic.session import BrokerSession, PaperSession
+from robinhood.agentic.session import BrokerSession, DailyCandleBrokerSession, PaperSession
 from robinhood.agentic.strategy import (
     CryptoScalpStrategy,
     DailyTrendFollowStrategy,
@@ -259,6 +259,13 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.command, "mcp-place-once")
         self.assertEqual(args.symbol, "spy")
         self.assertEqual(args.dollars, 1.0)
+
+    def test_run_daily_parser_requires_candle_file(self):
+        args = build_parser().parse_args(["run-daily", "--candle-file", "candles.json", "--range", "6mo"])
+
+        self.assertEqual(args.command, "run-daily")
+        self.assertEqual(args.candle_file, Path("candles.json"))
+        self.assertEqual(args.range, "6mo")
 
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
@@ -489,6 +496,28 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertIsInstance(strategy, DailyTrendFollowStrategy)
         self.assertEqual(strategy.target_dollars, 9.0)
+
+    def test_bot_analyzes_daily_candles(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            config = AgenticConfig(
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("SPY",)),
+                risk=RiskConfig(max_trade_dollars=10.0),
+            )
+            bot = AgenticBot(config)
+
+            entry = bot.analyze_candles(
+                "SPY",
+                _daily_candles("SPY", [100 + index for index in range(60)]),
+                strategy_name="daily_trend_follow",
+            )
+
+        self.assertEqual(entry.decision["action"], "BUY")
+        self.assertEqual(entry.quote["symbol"], "SPY")
+        self.assertEqual(entry.quote["price"], 159)
 
     def test_risk_rejects_unlisted_symbol(self):
         config = AgenticConfig(symbols=SymbolConfig(stocks=("AAPL",)))
@@ -1251,6 +1280,55 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(rows[1]["execution"]["broker_status"], "planned_rejected")
         self.assertEqual(rows[1]["execution"]["broker_reason"], "available dollars below minimum order size")
         self.assertIsNone(rows[1]["execution"]["order_intent"])
+
+    def test_daily_candle_broker_session_reviews_daily_trend_trade(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            candles = tuple(_daily_candles("SPY", [100 + index for index in range(60)]))
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=True,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("SPY",)),
+                lanes=(
+                    LaneConfig(
+                        "stocks",
+                        symbols=("SPY",),
+                        strategy="daily_trend_follow",
+                        poll_seconds=86400,
+                    ),
+                ),
+                risk=RiskConfig(max_trade_dollars=10.0, min_cash_reserve=50.0),
+            )
+            broker = _FakeReviewBroker(cash=100.0)
+            session = DailyCandleBrokerSession(
+                config=config,
+                candle_collector=CandleCollector(
+                    source=StaticHistoricalMarketDataSource({"SPY": candles}),
+                    cache_path=cache_path,
+                ),
+                broker=broker,
+            )
+
+            result = session.run_once()
+            rows = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(result.decisions, 1)
+        self.assertEqual(result.collection_errors, 0)
+        self.assertEqual(len(broker.orders), 1)
+        self.assertEqual(broker.orders[0].symbol, "SPY")
+        self.assertEqual(broker.orders[0].side, "buy")
+        self.assertEqual(broker.orders[0].dollar_amount, 10.0)
+        self.assertEqual(rows[0]["decision"]["action"], "BUY")
+        self.assertEqual(rows[1]["event_type"], "broker_execution")
+        self.assertEqual(rows[1]["execution"]["broker_status"], "reviewed")
 
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile
