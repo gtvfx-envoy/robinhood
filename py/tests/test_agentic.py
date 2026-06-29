@@ -1405,19 +1405,58 @@ class AgenticBotTests(unittest.TestCase):
             output.getvalue(),
         )
 
-    def test_daily_plan_summary_ranks_buys_by_confidence(self):
+    def test_daily_plan_summary_ranks_buys_by_trend_metrics(self):
         summary = _daily_plan_summary_line(
             (),
             [
-                DailyPlanItem("IWM", "BUY", 0.40, True, "approved", "no broker order: max open positions reached"),
-                DailyPlanItem("QQQ", "BUY", 0.75, True, "approved", "no broker order: max open positions reached"),
-                DailyPlanItem("TLT", "BUY", 0.75, True, "approved", "no broker order: max open positions reached"),
+                DailyPlanItem(
+                    "IWM",
+                    "BUY",
+                    1.0,
+                    "daily trend entry close=10.00 ema20=9.90 ema50=9.50 trend=4.20% atr=1.00%",
+                    True,
+                    "approved",
+                    "no broker order: max open positions reached",
+                ),
+                DailyPlanItem(
+                    "QQQ",
+                    "BUY",
+                    1.0,
+                    "daily trend entry close=10.00 ema20=9.90 ema50=9.50 trend=6.10% atr=2.00%",
+                    True,
+                    "approved",
+                    "no broker order: max open positions reached",
+                ),
+                DailyPlanItem(
+                    "TLT",
+                    "BUY",
+                    1.0,
+                    "daily trend entry close=10.00 ema20=9.90 ema50=9.50 trend=6.10% atr=1.50%",
+                    True,
+                    "approved",
+                    "no broker order: max open positions reached",
+                ),
             ],
         )
 
-        self.assertIn("buy_signals=QQQ,TLT,IWM", summary)
-        self.assertIn("ranked_buys=QQQ:0.75,TLT:0.75,IWM:0.40", summary)
-        self.assertIn("top_buy=QQQ", summary)
+        self.assertIn("buy_signals=TLT,QQQ,IWM", summary)
+        self.assertIn(
+            "ranked_buys=TLT:trend=6.10/atr=1.50,QQQ:trend=6.10/atr=2.00,IWM:trend=4.20/atr=1.00",
+            summary,
+        )
+        self.assertIn("top_buy=TLT", summary)
+
+    def test_daily_plan_summary_falls_back_to_confidence(self):
+        summary = _daily_plan_summary_line(
+            (),
+            [
+                DailyPlanItem("IWM", "BUY", 0.40, "fallback", True, "approved", "no broker order: max open positions reached"),
+                DailyPlanItem("QQQ", "BUY", 0.75, "fallback", True, "approved", "no broker order: max open positions reached"),
+            ],
+        )
+
+        self.assertIn("buy_signals=QQQ,IWM", summary)
+        self.assertIn("ranked_buys=QQQ:confidence=0.75,IWM:confidence=0.40", summary)
 
     def test_paper_session_skips_missing_quote_symbol(self):
         import tempfile

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 import time
 
 from .bot import AgenticBot
@@ -33,6 +34,7 @@ class DailyPlanItem:
     symbol: str
     action: str
     confidence: float
+    reason: str
     risk_approved: bool
     risk_reason: str
     broker_result: str
@@ -413,6 +415,7 @@ class DailyCandleBrokerSession:
                         symbol=normalized,
                         action=str(decision["action"]),
                         confidence=float(decision.get("confidence") or 0.0),
+                        reason=str(decision.get("reason") or ""),
                         risk_approved=bool(entry.risk["approved"]),
                         risk_reason=str(entry.risk["reason"]),
                         broker_result=result,
@@ -574,7 +577,7 @@ def _daily_plan_summary_line(open_positions: tuple[str, ...], items: list[DailyP
     ranked_buys = tuple(
         sorted(
             (item for item in items if item.action == "BUY" and item.risk_approved),
-            key=lambda item: (-item.confidence, item.symbol),
+            key=_daily_plan_buy_rank_key,
         )
     )
     buy_signals = tuple(item.symbol for item in ranked_buys)
@@ -590,7 +593,7 @@ def _daily_plan_summary_line(open_positions: tuple[str, ...], items: list[DailyP
         if item.broker_result.startswith(("broker reviewed:", "broker submitted:", "broker filled:"))
     )
     selected_text = ",".join(selected) if selected else "HOLD"
-    ranked_buy_text = _csv_or_dash(tuple(f"{item.symbol}:{item.confidence:.2f}" for item in ranked_buys))
+    ranked_buy_text = _csv_or_dash(tuple(_daily_plan_buy_rank_text(item) for item in ranked_buys))
     top_buy_text = ranked_buys[0].symbol if ranked_buys else "-"
     return (
         "[daily-plan] "
@@ -611,6 +614,34 @@ def _daily_plan_block_reason(item: DailyPlanItem) -> str:
     if item.broker_result.startswith(prefix):
         return item.broker_result[len(prefix):]
     return ""
+
+
+def _daily_plan_buy_rank_key(item: DailyPlanItem) -> tuple[float, float, float, str]:
+    trend = _extract_reason_pct(item.reason, "trend")
+    atr = _extract_reason_pct(item.reason, "atr")
+    trend_rank = trend if trend is not None else item.confidence
+    atr_rank = atr if atr is not None else 9999.0
+    return (-trend_rank, atr_rank, -item.confidence, item.symbol)
+
+
+def _daily_plan_buy_rank_text(item: DailyPlanItem) -> str:
+    trend = _extract_reason_pct(item.reason, "trend")
+    atr = _extract_reason_pct(item.reason, "atr")
+    if trend is not None and atr is not None:
+        return f"{item.symbol}:trend={trend:.2f}/atr={atr:.2f}"
+    if trend is not None:
+        return f"{item.symbol}:trend={trend:.2f}"
+    return f"{item.symbol}:confidence={item.confidence:.2f}"
+
+
+def _extract_reason_pct(reason: str, key: str) -> float | None:
+    match = re.search(rf"\b{re.escape(key)}=(-?\d+(?:\.\d+)?)%", reason)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 
 def _csv_or_dash(values: tuple[str, ...]) -> str:
