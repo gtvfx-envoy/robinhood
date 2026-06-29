@@ -1,0 +1,10 @@
+{
+    "agentic": {
+        "environment": [
+            "python"
+        ],
+        "alias": [
+            "python", "-m", "robinhood.agentic.cli"
+        ]
+    }
+}

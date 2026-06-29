@@ -1,3 +1,13 @@
 {
-    "+=PYTHONPATH": "${__BUNDLE__}/py"
+    "+=PYTHONPATH": [
+        "${__BUNDLE__}/py", 
+        "${LOCALAPPDATA}/Programs/Python/Python311/Lib/site-packages",
+        "${LOCALAPPDATA}/Programs/Python/Python311/Lib/site-packages/win32",
+        "${LOCALAPPDATA}/Programs/Python/Python311/Lib/site-packages/win32/lib"
+    ],
+    "+=PATH": [
+        "${LOCALAPPDATA}/Programs/Python/Python311/Lib/site-packages/pywin32_system32",
+        "${LOCALAPPDATA}/Programs/Python/Python311/Scripts",
+        "${LOCALAPPDATA}/Microsoft/WindowsApps"
+    ]
 }

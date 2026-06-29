@@ -1,0 +1,5 @@
+{
+    "environment_allowlist": [
+        "SERVICE_ROOT"
+    ]
+}
