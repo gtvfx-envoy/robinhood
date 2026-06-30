@@ -372,6 +372,12 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.max_live_order_dollars, 5.0)
         self.assertFalse(args.review_only)
         self.assertFalse(args.status_only)
+        self.assertFalse(args.exit_when_done)
+
+    def test_run_daemon_parser_exit_when_done(self):
+        args = build_parser().parse_args(["run-daemon", "--candle-file", "candles.json", "--exit-when-done"])
+
+        self.assertTrue(args.exit_when_done)
 
     def test_market_clock_parser(self):
         args = build_parser().parse_args(["market-clock", "--timezone", "America/Chicago"])
@@ -1082,6 +1088,86 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(result.decisions, 2)
         self.assertEqual(state.pending_orders, ())
         self.assertEqual(state.lane_evaluations["stocks"], "2026-06-29|attempts=2|submitted=1")
+
+    def test_persistent_daemon_exit_when_done_stops_without_sleeping(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            candle_path = Path(tmp_dir) / "candles.json"
+            store = DaemonStateStore(state_path)
+            store.save(
+                DaemonState(
+                    trading_day="2026-06-29",
+                    lane_evaluations={"stocks": "2026-06-29|attempts=1|submitted=1"},
+                    live_order_attempts=1,
+                    live_orders_submitted=1,
+                )
+            )
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                symbols=SymbolConfig(stocks=("QQQ",)),
+                lanes=(LaneConfig("stocks", symbols=("QQQ",), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=10.0, max_live_order_attempts_per_day=2),
+            )
+            daemon = PersistentDaemon(
+                config=config,
+                state_store=store,
+                broker_factory=lambda _max_attempts: _FakeReviewBroker(cash=100.0),
+                candle_file=candle_path,
+                clock=MarketClock(pre_open_warmup_minutes=5),
+                now_fn=lambda: datetime(2026, 6, 29, 10, 0, tzinfo=tz),
+                sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("should not sleep")),
+            )
+
+            result = daemon.run(exit_when_done=True)
+
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(result.decisions, 0)
+
+    def test_persistent_daemon_keyboard_interrupt_reconciles_pending_state(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+
+        def reconcile(state):
+            return replace(state, pending_orders=())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            candle_path = Path(tmp_dir) / "candles.json"
+            store = DaemonStateStore(state_path)
+            store.save(
+                DaemonState(
+                    trading_day="2026-06-29",
+                    pending_orders=(PendingOrderState("ref-1", "QQQ", "buy", "unconfirmed"),),
+                )
+            )
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                symbols=SymbolConfig(stocks=("QQQ",)),
+                lanes=(LaneConfig("stocks", symbols=("QQQ",), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=10.0, max_live_order_attempts_per_day=2),
+            )
+            daemon = PersistentDaemon(
+                config=config,
+                state_store=store,
+                broker_factory=lambda _max_attempts: _FakeReviewBroker(cash=100.0),
+                candle_file=candle_path,
+                clock=MarketClock(pre_open_warmup_minutes=5),
+                now_fn=lambda: datetime(2026, 6, 29, 10, 0, tzinfo=tz),
+                sleep_fn=lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+                state_reconciler=reconcile,
+            )
+
+            result = daemon.run()
+            state = store.load()
+
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(state.pending_orders, ())
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile

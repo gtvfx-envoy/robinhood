@@ -50,44 +50,62 @@ class PersistentDaemon:
         self.order_result_reconciler = order_result_reconciler
         self.state_reconciler = state_reconciler
 
-    def run(self, max_iterations: int | None = None, status_only: bool = False) -> SessionResult:
+    def run(
+        self,
+        max_iterations: int | None = None,
+        status_only: bool = False,
+        exit_when_done: bool = False,
+    ) -> SessionResult:
         iterations = 0
         decisions = 0
         skipped = 0
         errors = 0
         last_result = SessionResult(0, 0, 0, 0, 0.0, {})
 
-        while max_iterations is None or iterations < max_iterations:
-            iterations += 1
-            status = self.clock.status(self.now_fn() if self.now_fn else None)
-            state = self.state_store.load().for_trade_day(status.trade_day)
-            self.state_store.save(state)
-            state = self._reconcile_pending_orders(state)
-            self._print_status(status, state)
-
-            if status_only:
-                break
-            if status.warmup_allowed:
-                state = replace(state, last_warmup_at=status.now.isoformat())
-                self._collect_daily_candles()
+        try:
+            while max_iterations is None or iterations < max_iterations:
+                iterations += 1
+                status = self.clock.status(self.now_fn() if self.now_fn else None)
+                state = self.state_store.load().for_trade_day(status.trade_day)
                 self.state_store.save(state)
-                print("[daemon] warmup collected daily candles")
-            elif status.trading_allowed:
-                if state.pending_orders:
-                    print("[daemon] pending orders require reconciliation before daily lanes continue")
-                    continue
-                if _daily_lane_due(self.config, state, status.trade_day):
-                    result = self._run_daily_lanes(state, status.trade_day or "")
-                    last_result = result
-                    decisions += result.decisions
-                    skipped += result.skipped_quotes
-                    errors += result.collection_errors
-                else:
-                    print("[daemon] daily lanes already evaluated for this trading day")
+                state = self._reconcile_pending_orders(state)
+                self._print_status(status, state)
 
-            if max_iterations is not None and iterations >= max_iterations:
-                break
-            self.sleep_fn(self._sleep_seconds(status))
+                if status_only:
+                    break
+                if status.warmup_allowed:
+                    state = replace(state, last_warmup_at=status.now.isoformat())
+                    self._collect_daily_candles()
+                    self.state_store.save(state)
+                    print("[daemon] warmup collected daily candles")
+                elif status.trading_allowed:
+                    if state.pending_orders:
+                        print("[daemon] pending orders require reconciliation before daily lanes continue")
+                    elif _daily_lane_due(self.config, state, status.trade_day):
+                        result = self._run_daily_lanes(state, status.trade_day or "")
+                        last_result = result
+                        decisions += result.decisions
+                        skipped += result.skipped_quotes
+                        errors += result.collection_errors
+                    else:
+                        print("[daemon] daily lanes already evaluated for this trading day")
+
+                    state = self.state_store.load().for_trade_day(status.trade_day)
+                    if exit_when_done and _daemon_done_for_trade_day(
+                        self.config,
+                        state,
+                        status.trade_day,
+                        review_only=self.review_only,
+                    ):
+                        print("[daemon] trading work complete for this trading day; exiting")
+                        break
+
+                if max_iterations is not None and iterations >= max_iterations:
+                    break
+                self.sleep_fn(self._sleep_seconds(status))
+        except KeyboardInterrupt:
+            print("\n[daemon] keyboard interrupt received; reconciling pending state before exit")
+            self._finalize_interrupted_state()
 
         return replace(
             last_result,
@@ -96,6 +114,14 @@ class PersistentDaemon:
             skipped_quotes=skipped,
             collection_errors=errors,
         )
+
+    def _finalize_interrupted_state(self) -> None:
+        state = self.state_store.load()
+        reconciled = self._reconcile_pending_orders(state)
+        if reconciled.pending_orders:
+            print(f"[daemon] stopped with pending_orders={len(reconciled.pending_orders)}")
+        else:
+            print("[daemon] stopped with pending_orders=0")
 
     def _reconcile_pending_orders(self, state: DaemonState) -> DaemonState:
         if not state.pending_orders or self.state_reconciler is None:
@@ -301,6 +327,19 @@ def _live_capacity_remaining(config: AgenticConfig, state: DaemonState) -> bool:
         return False
     max_notional = config.risk.max_live_notional_per_day or config.risk.max_trade_dollars
     return max_notional <= 0 or state.live_notional_attempted < max_notional
+
+
+def _daemon_done_for_trade_day(
+    config: AgenticConfig,
+    state: DaemonState,
+    trade_day: str | None,
+    review_only: bool = False,
+) -> bool:
+    if not trade_day or state.pending_orders:
+        return False
+    if not _daily_lane_due(config, state, trade_day):
+        return True
+    return not review_only and not _live_capacity_remaining(config, state)
 
 
 def _intent_dollars(intent: OrderIntent, price: float) -> float:

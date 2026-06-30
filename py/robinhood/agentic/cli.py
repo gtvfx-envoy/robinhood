@@ -217,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_daemon.add_argument("--review-only", action="store_true", help="Force review mode even when live gates are on.")
     run_daemon.add_argument("--max-iterations", type=int, help="Stop after N daemon loop iterations.")
     run_daemon.add_argument("--status-only", action="store_true", help="Print daemon clock/state status and exit.")
+    run_daemon.add_argument(
+        "--exit-when-done",
+        action="store_true",
+        help="Exit once today's lanes are complete or live trading capacity is exhausted.",
+    )
     run_daemon.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
     run_daemon.add_argument(
         "--max-live-order-dollars",
@@ -458,7 +463,11 @@ def main() -> int:
                 state,
             )["state"],
         )
-        result = daemon.run(max_iterations=args.max_iterations, status_only=args.status_only)
+        result = daemon.run(
+            max_iterations=args.max_iterations,
+            status_only=args.status_only,
+            exit_when_done=args.exit_when_done,
+        )
         print(
             "[summary] "
             f"iterations={result.iterations} decisions={result.decisions} "
