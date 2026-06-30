@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -51,6 +52,7 @@ from robinhood.agentic.daemon_state import (
     PendingOrderState,
     clear_pending_orders,
     daemon_state_summary,
+    reset_trade_day_after_unresolved_order,
 )
 from robinhood.agentic.execution import plan_order_intent
 from robinhood.agentic.journal import DecisionJournal
@@ -398,6 +400,13 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(args.state_file, Path("state.json"))
         self.assertEqual(args.reason, "manual")
 
+    def test_daemon_reset_trade_day_parser_requires_reason(self):
+        args = build_parser().parse_args(["daemon-reset-trade-day", "--state-file", "state.json", "--reason", "manual"])
+
+        self.assertEqual(args.command, "daemon-reset-trade-day")
+        self.assertEqual(args.state_file, Path("state.json"))
+        self.assertEqual(args.reason, "manual")
+
     def test_mcp_tools_parser_defaults_to_text(self):
         args = build_parser().parse_args(["mcp-tools", "--filter", "order"])
 
@@ -717,6 +726,27 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(cleared.live_order_attempts, 1)
         self.assertTrue(cleared.last_reconciliation_at)
 
+    def test_reset_trade_day_after_unresolved_order_clears_retry_blockers(self):
+        state = DaemonState(
+            trading_day="2026-06-30",
+            last_warmup_at="2026-06-30T09:25:00-04:00",
+            lane_evaluations={"stocks": "2026-06-30"},
+            live_order_attempts=1,
+            live_orders_submitted=0,
+            live_notional_attempted=5.0,
+            pending_orders=(PendingOrderState("ref", "QQQ", "buy", "unconfirmed", dollar_amount=5.0),),
+        )
+
+        reset = reset_trade_day_after_unresolved_order(state)
+
+        self.assertEqual(reset.trading_day, "2026-06-30")
+        self.assertEqual(reset.last_warmup_at, "2026-06-30T09:25:00-04:00")
+        self.assertEqual(reset.lane_evaluations, {})
+        self.assertEqual(reset.live_order_attempts, 0)
+        self.assertEqual(reset.live_notional_attempted, 0.0)
+        self.assertEqual(reset.pending_orders, ())
+        self.assertTrue(reset.last_reconciliation_at)
+
     def test_reconcile_daemon_state_keeps_unresolved_pending_order(self):
         state = DaemonState(
             pending_orders=(
@@ -841,6 +871,30 @@ class AgenticBotTests(unittest.TestCase):
         self.assertIn("pending or unconfirmed", second.reason)
         self.assertEqual(state.live_order_attempts, 1)
         self.assertEqual(state.live_orders_submitted, 1)
+
+    def test_state_backed_broker_reconciles_before_persisting_pending_order(self):
+        import tempfile
+
+        def reconcile(result):
+            return replace(result, placed=True, status="queued", order_id="order-1")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = DaemonStateStore(Path(tmp_dir) / "state.json")
+            store.save(DaemonState(trading_day="2026-06-30"))
+            broker = StateBackedBroker(
+                _FakePlacedBroker(cash=100.0),
+                store,
+                AgenticConfig(risk=RiskConfig(max_live_order_attempts_per_day=1, max_live_notional_per_day=10.0)),
+                order_result_reconciler=reconcile,
+            )
+
+            result = broker.place_order(OrderIntent("QQQ", "buy", dollar_amount=5.0), price=100.0)
+            state = store.load()
+
+        self.assertTrue(result.placed)
+        self.assertEqual(result.order_id, "order-1")
+        self.assertEqual(state.pending_orders[0].status, "queued")
+        self.assertEqual(state.pending_orders[0].order_id, "order-1")
 
     def test_state_backed_broker_enforces_daily_attempt_limit(self):
         import tempfile

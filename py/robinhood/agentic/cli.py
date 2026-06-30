@@ -25,6 +25,7 @@ from .daemon_state import (
     clear_pending_orders,
     daemon_state_summary,
     replace_state_pending,
+    reset_trade_day_after_unresolved_order,
 )
 from .journal import DecisionJournal
 from .market_clock import MarketCalendar, MarketClock
@@ -131,6 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_clear.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
     daemon_clear.add_argument("--reason", required=True, help="Operator reason for clearing pending state.")
     _add_common_args(daemon_clear)
+
+    daemon_reset = subparsers.add_parser(
+        "daemon-reset-trade-day",
+        help="Reset today's daemon trading state after operator-confirmed no broker order exists.",
+    )
+    daemon_reset.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    daemon_reset.add_argument("--reason", required=True, help="Operator reason for resetting daemon state.")
+    _add_common_args(daemon_reset)
 
     run = subparsers.add_parser("run", help="Run a persistent paper-trading session.")
     run.add_argument("--quote-file", type=Path, help="JSON quote feed path.")
@@ -372,6 +381,37 @@ def main() -> int:
             }
         )
         print(f"[daemon-clear-pending] cleared={cleared} reason={reason}")
+        return 0
+
+    if args.command == "daemon-reset-trade-day":
+        reason = args.reason.strip()
+        if not reason:
+            raise SystemExit("--reason must not be empty")
+        state_path = _daemon_state_path(config, args.state_file)
+        store = DaemonStateStore(state_path)
+        state = store.load()
+        updated = reset_trade_day_after_unresolved_order(state)
+        store.save(updated)
+        DecisionJournal(Path(config.journal_path)).append_event(
+            {
+                "event_type": "daemon_trade_day_reset",
+                "source": "daemon-reset-trade-day",
+                "reason": reason,
+                "trading_day": state.trading_day,
+                "previous_live_order_attempts": state.live_order_attempts,
+                "previous_live_orders_submitted": state.live_orders_submitted,
+                "previous_live_notional_attempted": state.live_notional_attempted,
+                "previous_live_notional_submitted": state.live_notional_submitted,
+                "previous_lane_evaluations": dict(state.lane_evaluations),
+                "previous_pending_orders": [_pending_order_payload(order) for order in state.pending_orders],
+            }
+        )
+        print(
+            "[daemon-reset-trade-day] "
+            f"trading_day={state.trading_day or '-'} "
+            f"cleared_pending={len(state.pending_orders)} "
+            f"reset_attempts={state.live_order_attempts} reason={reason}"
+        )
         return 0
 
     if args.command == "run-daemon":

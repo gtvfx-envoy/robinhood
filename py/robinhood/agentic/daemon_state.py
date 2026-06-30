@@ -108,6 +108,20 @@ def clear_pending_orders(state: DaemonState) -> DaemonState:
     return replace_state_pending(state, ())
 
 
+def reset_trade_day_after_unresolved_order(state: DaemonState) -> DaemonState:
+    return DaemonState(
+        trading_day=state.trading_day,
+        last_warmup_at=state.last_warmup_at,
+        last_reconciliation_at=datetime.now(UTC).isoformat(),
+        lane_evaluations={},
+        live_order_attempts=0,
+        live_orders_submitted=0,
+        live_notional_attempted=0.0,
+        live_notional_submitted=0.0,
+        pending_orders=(),
+    )
+
+
 def _state_from_payload(payload: dict[str, Any]) -> DaemonState:
     pending = payload.get("pending_orders") or []
     if not isinstance(pending, list):

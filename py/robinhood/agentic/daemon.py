@@ -99,6 +99,7 @@ class PersistentDaemon:
             self.state_store,
             self.config,
             live_limits_enabled=not self.review_only,
+            order_result_reconciler=self.order_result_reconciler,
         )
         effective_config = _daemon_effective_config(self.config, self.max_live_order_dollars)
         bot = AgenticBot(config=effective_config)
@@ -154,11 +155,13 @@ class StateBackedBroker(Broker):
         state_store: DaemonStateStore,
         config: AgenticConfig,
         live_limits_enabled: bool = True,
+        order_result_reconciler: Callable[[OrderResult], OrderResult] | None = None,
     ):
         self.broker = broker
         self.state_store = state_store
         self.config = config
         self.live_limits_enabled = live_limits_enabled
+        self.order_result_reconciler = order_result_reconciler
 
     def get_account_snapshot(self) -> AccountSnapshot:
         return self.broker.get_account_snapshot()
@@ -184,6 +187,8 @@ class StateBackedBroker(Broker):
         self.state_store.save(state)
 
         result = self.broker.place_order(intent, price)
+        if (result.placed or result.status == "unconfirmed") and self.order_result_reconciler is not None:
+            result = self.order_result_reconciler(result)
         state = self.state_store.load()
         pending = list(state.pending_orders)
         live_orders_submitted = state.live_orders_submitted
