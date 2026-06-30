@@ -1,7 +1,7 @@
 {
     "agentic": {
         "environment": [
-            "python"
+            "python_env.json"
         ],
         "alias": [
             "python", "-m", "robinhood.agentic.cli"
@@ -9,7 +9,7 @@
     },
     "run_bot": {
         "environment": [
-            "python"
+            "python_env.json"
         ],
         "alias": [
             "python", "-m", "robinhood.agentic.cli", "run_bot"

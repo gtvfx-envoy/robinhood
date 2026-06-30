@@ -452,6 +452,11 @@ def main() -> int:
                 client,
                 result,
             ),
+            state_reconciler=lambda state: _reconcile_daemon_state(
+                daemon_config.account_number,
+                client,
+                state,
+            )["state"],
         )
         result = daemon.run(max_iterations=args.max_iterations, status_only=args.status_only)
         print(

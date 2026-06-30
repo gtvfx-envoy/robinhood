@@ -34,6 +34,7 @@ class PersistentDaemon:
         sleep_fn: Callable[[float], None] = time.sleep,
         now_fn: Callable[[], datetime] | None = None,
         order_result_reconciler: Callable[[OrderResult], OrderResult] | None = None,
+        state_reconciler: Callable[[DaemonState], DaemonState] | None = None,
     ):
         self.config = config
         self.state_store = state_store
@@ -47,6 +48,7 @@ class PersistentDaemon:
         self.sleep_fn = sleep_fn
         self.now_fn = now_fn
         self.order_result_reconciler = order_result_reconciler
+        self.state_reconciler = state_reconciler
 
     def run(self, max_iterations: int | None = None, status_only: bool = False) -> SessionResult:
         iterations = 0
@@ -60,6 +62,7 @@ class PersistentDaemon:
             status = self.clock.status(self.now_fn() if self.now_fn else None)
             state = self.state_store.load().for_trade_day(status.trade_day)
             self.state_store.save(state)
+            state = self._reconcile_pending_orders(state)
             self._print_status(status, state)
 
             if status_only:
@@ -70,6 +73,9 @@ class PersistentDaemon:
                 self.state_store.save(state)
                 print("[daemon] warmup collected daily candles")
             elif status.trading_allowed:
+                if state.pending_orders:
+                    print("[daemon] pending orders require reconciliation before daily lanes continue")
+                    continue
                 if _daily_lane_due(self.config, state, status.trade_day):
                     result = self._run_daily_lanes(state, status.trade_day or "")
                     last_result = result
@@ -90,6 +96,26 @@ class PersistentDaemon:
             skipped_quotes=skipped,
             collection_errors=errors,
         )
+
+    def _reconcile_pending_orders(self, state: DaemonState) -> DaemonState:
+        if not state.pending_orders or self.state_reconciler is None:
+            return state
+        had_pending_orders = bool(state.pending_orders)
+        reconciled = self.state_reconciler(state)
+        if (
+            had_pending_orders
+            and not reconciled.pending_orders
+            and not self.review_only
+            and _live_capacity_remaining(self.config, reconciled)
+        ):
+            lane_evaluations = dict(reconciled.lane_evaluations)
+            for lane in _daily_lanes(self.config):
+                if lane_evaluations.get(lane.name) == reconciled.trading_day:
+                    del lane_evaluations[lane.name]
+            reconciled = replace(reconciled, lane_evaluations=lane_evaluations)
+        if reconciled != state:
+            self.state_store.save(reconciled)
+        return reconciled
 
     def _run_daily_lanes(self, state: DaemonState, trade_day: str) -> SessionResult:
         remaining_attempts = max(0, self.config.risk.max_live_order_attempts_per_day - state.live_order_attempts)
@@ -113,10 +139,14 @@ class PersistentDaemon:
         )
         result = session.run_once()
         state = self.state_store.load().for_trade_day(trade_day)
-        lane_evaluations = dict(state.lane_evaluations)
-        for lane in _daily_lanes(self.config):
-            lane_evaluations[lane.name] = trade_day
-        self.state_store.save(replace(state, lane_evaluations=lane_evaluations))
+        if state.pending_orders:
+            print("[daemon] daily lanes awaiting pending order reconciliation")
+        else:
+            lane_evaluations = dict(state.lane_evaluations)
+            lane_marker = _lane_evaluation_marker(trade_day, state)
+            for lane in _daily_lanes(self.config):
+                lane_evaluations[lane.name] = lane_marker
+            self.state_store.save(replace(state, lane_evaluations=lane_evaluations))
         print(
             "[daemon-summary] "
             f"trade_day={trade_day} decisions={result.decisions} "
@@ -243,7 +273,34 @@ def _daily_lanes(config: AgenticConfig):
 def _daily_lane_due(config: AgenticConfig, state: DaemonState, trade_day: str | None) -> bool:
     if not trade_day:
         return False
-    return any(state.lane_evaluations.get(lane.name) != trade_day for lane in _daily_lanes(config))
+    lane_marker = _lane_evaluation_marker(trade_day, state)
+    return any(_lane_evaluation_due(config, state, trade_day, lane.name, lane_marker) for lane in _daily_lanes(config))
+
+
+def _lane_evaluation_due(
+    config: AgenticConfig,
+    state: DaemonState,
+    trade_day: str,
+    lane_name: str,
+    lane_marker: str,
+) -> bool:
+    evaluation = state.lane_evaluations.get(lane_name)
+    if evaluation == lane_marker:
+        return False
+    if evaluation == trade_day:
+        return state.live_orders_submitted > 0 and _live_capacity_remaining(config, state)
+    return True
+
+
+def _lane_evaluation_marker(trade_day: str, state: DaemonState) -> str:
+    return f"{trade_day}|attempts={state.live_order_attempts}|submitted={state.live_orders_submitted}"
+
+
+def _live_capacity_remaining(config: AgenticConfig, state: DaemonState) -> bool:
+    if state.live_order_attempts >= config.risk.max_live_order_attempts_per_day:
+        return False
+    max_notional = config.risk.max_live_notional_per_day or config.risk.max_trade_dollars
+    return max_notional <= 0 or state.live_notional_attempted < max_notional
 
 
 def _intent_dollars(intent: OrderIntent, price: float) -> float:

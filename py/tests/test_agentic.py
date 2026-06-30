@@ -958,6 +958,44 @@ class AgenticBotTests(unittest.TestCase):
             daemon = PersistentDaemon(
                 config=config,
                 state_store=store,
+                broker_factory=lambda _max_attempts: _FakeReviewBroker(cash=100.0),
+                candle_file=candle_path,
+                clock=MarketClock(pre_open_warmup_minutes=5),
+                candle_source=StaticHistoricalMarketDataSource({"QQQ": candles}),
+                now_fn=lambda: datetime(2026, 6, 29, 10, 0, tzinfo=tz),
+                sleep_fn=lambda _seconds: None,
+            )
+
+            first = daemon.run(max_iterations=1)
+            second = daemon.run(max_iterations=1)
+            state = store.load()
+
+        self.assertEqual(first.decisions, 1)
+        self.assertEqual(second.decisions, 0)
+        self.assertEqual(state.lane_evaluations["stocks"], "2026-06-29|attempts=1|submitted=0")
+        self.assertEqual(state.live_order_attempts, 1)
+
+    def test_persistent_daemon_keeps_daily_lane_due_while_order_pending(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+        candles = tuple(_daily_candles("QQQ", [100 + index for index in range(60)]))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            candle_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "journal.jsonl"
+            store = DaemonStateStore(state_path)
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("QQQ",)),
+                lanes=(LaneConfig("stocks", symbols=("QQQ",), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=10.0, max_live_order_attempts_per_day=2),
+            )
+            daemon = PersistentDaemon(
+                config=config,
+                state_store=store,
                 broker_factory=lambda _max_attempts: _FakeConfirmedBroker(cash=100.0),
                 candle_file=candle_path,
                 clock=MarketClock(pre_open_warmup_minutes=5),
@@ -972,8 +1010,78 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertEqual(first.decisions, 1)
         self.assertEqual(second.decisions, 0)
-        self.assertEqual(state.lane_evaluations["stocks"], "2026-06-29")
-        self.assertEqual(state.live_order_attempts, 1)
+        self.assertEqual(state.lane_evaluations, {})
+        self.assertEqual(len(state.pending_orders), 1)
+
+    def test_persistent_daemon_reconciles_pending_order_then_continues_daily_lane(self):
+        import tempfile
+
+        tz = ZoneInfo("America/New_York")
+        candles = {
+            "QQQ": tuple(_daily_candles("QQQ", [100 + index for index in range(60)])),
+            "IWM": tuple(_daily_candles("IWM", [80 + index for index in range(60)])),
+        }
+
+        def reconcile(state):
+            return replace(
+                state,
+                pending_orders=(),
+                live_order_attempts=1,
+                live_orders_submitted=1,
+                live_notional_attempted=5.0,
+                live_notional_submitted=5.0,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            candle_path = Path(tmp_dir) / "candles.json"
+            journal_path = Path(tmp_dir) / "journal.jsonl"
+            store = DaemonStateStore(state_path)
+            store.save(
+                DaemonState(
+                    trading_day="2026-06-29",
+                    lane_evaluations={"stocks": "2026-06-29"},
+                    pending_orders=(
+                        PendingOrderState(
+                            ref_id="ref-1",
+                            symbol="QQQ",
+                            side="buy",
+                            status="unconfirmed",
+                            order_id="order-1",
+                            dollar_amount=5.0,
+                        ),
+                    ),
+                )
+            )
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=False,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(stocks=("QQQ", "IWM")),
+                lanes=(LaneConfig("stocks", symbols=("QQQ", "IWM"), strategy="daily_trend_follow"),),
+                risk=RiskConfig(max_trade_dollars=10.0, max_live_order_attempts_per_day=2),
+            )
+            daemon = PersistentDaemon(
+                config=config,
+                state_store=store,
+                broker_factory=lambda _max_attempts: _FakeReviewBroker(
+                    cash=95.0,
+                    positions={"QQQ": Position("QQQ", quantity=0.01, average_cost=100.0)},
+                ),
+                candle_file=candle_path,
+                clock=MarketClock(pre_open_warmup_minutes=5),
+                candle_source=StaticHistoricalMarketDataSource(candles),
+                now_fn=lambda: datetime(2026, 6, 29, 10, 0, tzinfo=tz),
+                sleep_fn=lambda _seconds: None,
+                state_reconciler=reconcile,
+            )
+
+            result = daemon.run(max_iterations=1)
+            state = store.load()
+
+        self.assertEqual(result.decisions, 2)
+        self.assertEqual(state.pending_orders, ())
+        self.assertEqual(state.lane_evaluations["stocks"], "2026-06-29|attempts=2|submitted=1")
 
     def test_journal_place_once_writes_execution_event(self):
         import tempfile
@@ -1405,11 +1513,27 @@ class AgenticBotTests(unittest.TestCase):
             auto_place_orders=True,
         )
 
-        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=10.0), price=100.0)
+        result = broker.place_order(
+            OrderIntent("SPY", "buy", dollar_amount=10.0, ref_id="local-order-id"),
+            price=100.0,
+        )
 
         self.assertTrue(result.placed)
         self.assertEqual(result.order_id, "live-order")
         self.assertIn("place_equity_order", client.calls)
+        self.assertEqual(
+            client.call_arguments["place_equity_order"],
+            {
+                "account_number": "123",
+                "symbol": "SPY",
+                "side": "buy",
+                "type": "market",
+                "market_hours": "regular_hours",
+                "time_in_force": "gfd",
+                "dollar_amount": "10.00",
+                "ref_id": "local-order-id",
+            },
+        )
 
     def test_agentic_mcp_broker_live_order_fuse_allows_one_submission(self):
         client = _FakeMcpClient(
@@ -1457,8 +1581,88 @@ class AgenticBotTests(unittest.TestCase):
         self.assertFalse(result.placed)
         self.assertEqual(result.status, "unconfirmed")
         self.assertIn("missing order id", result.reason)
+        self.assertIn("keys=state", result.reason)
         self.assertEqual(result.order_id, "")
         self.assertEqual(client.calls.count("place_equity_order"), 1)
+
+    def test_agentic_mcp_broker_extracts_nested_order_id_from_place_payload(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {
+                    "data": {
+                        "order": {
+                            "id": "nested-order",
+                            "state": "queued",
+                        }
+                    }
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertTrue(result.placed)
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(result.order_id, "nested-order")
+
+    def test_agentic_mcp_broker_reports_place_error_payload(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {
+                    "status": "error",
+                    "message": "order placement is unavailable",
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("order placement is unavailable", result.reason)
+
+    def test_agentic_mcp_broker_reports_mcp_is_error_payload(self):
+        client = _FakeMcpClient(
+            {
+                "get_equity_tradability": {"results": [{"symbol": "SPY", "tradable": True}]},
+                "review_equity_order": {"status": "approved", "estimated_quantity": "0.1"},
+                "place_equity_order": {
+                    "is_error": True,
+                    "error": "investor profile is incomplete",
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        result = broker.place_order(OrderIntent("SPY", "buy", dollar_amount=1.0), price=100.0)
+
+        self.assertFalse(result.placed)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("investor profile is incomplete", result.reason)
 
     def test_agentic_mcp_broker_attempt_fuse_blocks_after_unconfirmed_submission(self):
         client = _FakeMcpClient(
@@ -1618,6 +1822,21 @@ class AgenticBotTests(unittest.TestCase):
         decoded = decode_mcp_tool_result(Result())
 
         self.assertEqual(decoded["buying_power"], "100.00")
+
+    def test_decode_mcp_tool_result_preserves_error_text_content(self):
+        class TextContent:
+            text = "API error 400: investor profile incomplete"
+
+        class Result:
+            isError = True
+            content = [TextContent()]
+            meta = {"rh_error_category": "invalid_request"}
+
+        decoded = decode_mcp_tool_result(Result())
+
+        self.assertTrue(decoded["is_error"])
+        self.assertEqual(decoded["error"], "API error 400: investor profile incomplete")
+        self.assertEqual(decoded["meta"], {"rh_error_category": "invalid_request"})
 
     def test_decode_mcp_tools_result_normalizes_sdk_shapes(self):
         class Tool:

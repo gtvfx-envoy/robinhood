@@ -135,15 +135,24 @@ class AgenticMcpEquityBroker(Broker):
             )
 
         self._live_order_attempts += 1
-        payload = self.client.call_tool("place_equity_order", self._order_arguments(intent))
+        payload = self.client.call_tool("place_equity_order", self._order_arguments(intent, include_ref_id=True))
         result = _as_mapping(payload)
+        placement_error = _placement_error_reason(result)
+        if placement_error:
+            return OrderResult(
+                intent=intent,
+                placed=False,
+                status="rejected",
+                reason=placement_error,
+                raw=payload,
+            )
         order_id = _extract_order_id(result)
         if not order_id:
             return OrderResult(
                 intent=intent,
                 placed=False,
                 status="unconfirmed",
-                reason="mcp order submission unconfirmed: missing order id",
+                reason=f"mcp order submission unconfirmed: missing order id ({_payload_summary(result)})",
                 order_id="",
                 filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
                 average_price=_extract_float(result, ("average_price", "price")),
@@ -154,7 +163,7 @@ class AgenticMcpEquityBroker(Broker):
         return OrderResult(
             intent=intent,
             placed=True,
-            status=str(result.get("state") or result.get("status") or "submitted"),
+            status=_extract_order_status(result),
             reason="mcp order submitted",
             order_id=order_id,
             filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
@@ -162,7 +171,7 @@ class AgenticMcpEquityBroker(Broker):
             raw=payload,
         )
 
-    def _order_arguments(self, intent: OrderIntent) -> dict[str, Any]:
+    def _order_arguments(self, intent: OrderIntent, include_ref_id: bool = False) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "account_number": self.account_number,
             "symbol": intent.symbol,
@@ -177,6 +186,8 @@ class AgenticMcpEquityBroker(Broker):
             arguments["quantity"] = f"{intent.quantity:.6f}".rstrip("0").rstrip(".")
         if intent.limit_price is not None:
             arguments["limit_price"] = f"{intent.limit_price:.2f}"
+        if include_ref_id:
+            arguments["ref_id"] = intent.ref_id
         return arguments
 
     def _live_order_cap_reason(self, intent: OrderIntent, price: float) -> str:
@@ -205,13 +216,79 @@ class AgenticMcpEquityBroker(Broker):
 
 
 def _extract_order_id(payload: dict[str, Any]) -> str:
-    return str(
-        _get_path(payload, "id")
-        or _get_path(payload, "order_id")
-        or _get_path(payload, "order.id")
-        or _get_path(payload, "order.order_id")
+    return str(_first_matching_key(payload, ("id", "order_id", "equity_order_id", "client_order_id")) or "")
+
+
+def _extract_order_status(payload: dict[str, Any]) -> str:
+    return str(_first_matching_key(payload, ("state", "status")) or "submitted")
+
+
+def _first_matching_key(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        for key in keys:
+            found = value.get(key)
+            if found not in (None, ""):
+                return found
+        for key in (
+            "order",
+            "equity_order",
+            "equity_order_result",
+            "result",
+            "data",
+            "payload",
+            "results",
+            "orders",
+        ):
+            found = _first_matching_key(value.get(key), keys)
+            if found not in (None, ""):
+                return found
+        for found in (_first_matching_key(item, keys) for item in value.values()):
+            if found not in (None, ""):
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _first_matching_key(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _placement_error_reason(payload: dict[str, Any]) -> str:
+    state = str(_get_path(payload, "state") or _get_path(payload, "status") or "").lower()
+    alerts = _extract_alerts(payload)
+    message = str(
+        _get_path(payload, "message")
+        or _get_path(payload, "error")
+        or _get_path(payload, "error.message")
+        or _get_path(payload, "detail")
         or ""
     )
+    if payload.get("is_error"):
+        return f"mcp order submission rejected: {_compact_reason(message, alerts, state)}"
+    if state in {"rejected", "blocked", "error", "failed"}:
+        return f"mcp order submission rejected: {_compact_reason(message, alerts, state)}"
+    if alerts and _has_blocking_alert(tuple(alerts), payload):
+        return f"mcp order submission rejected: {_compact_reason(message, alerts, state)}"
+    return ""
+
+
+def _compact_reason(message: str, alerts: list[str], state: str) -> str:
+    reason_parts = []
+    if state:
+        reason_parts.append(f"state={state}")
+    if message:
+        reason_parts.append(message)
+    reason_parts.extend(alerts[:3])
+    return "; ".join(reason_parts) if reason_parts else "no order id returned"
+
+
+def _payload_summary(payload: dict[str, Any]) -> str:
+    if not payload:
+        return "empty payload"
+    keys = ",".join(sorted(str(key) for key in payload.keys())[:8])
+    state = _get_path(payload, "state") or _get_path(payload, "status") or "-"
+    message = _get_path(payload, "message") or _get_path(payload, "error.message") or _get_path(payload, "error") or "-"
+    return f"keys={keys or '-'} state={state} message={message}"
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -220,6 +297,10 @@ def _as_mapping(value: Any) -> dict[str, Any]:
         if isinstance(data, dict):
             return data
         return value
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        return value[0]
+    if isinstance(value, str):
+        return {"error": value}
     return {}
 
 

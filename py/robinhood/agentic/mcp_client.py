@@ -268,6 +268,16 @@ class _OAuthCallbackServer:
 def decode_mcp_tool_result(result: Any) -> Any:
     """Decode common MCP SDK tool result shapes."""
 
+    if _is_error_result(result):
+        decoded = _decode_content(getattr(result, "content", None))
+        payload = {
+            "is_error": True,
+            "error": decoded,
+        }
+        meta = getattr(result, "meta", None)
+        if meta:
+            payload["meta"] = meta
+        return payload
     if hasattr(result, "structured_content") and result.structured_content is not None:
         return result.structured_content
     if hasattr(result, "structuredContent") and result.structuredContent is not None:
@@ -275,6 +285,10 @@ def decode_mcp_tool_result(result: Any) -> Any:
     if hasattr(result, "content"):
         return _decode_content(result.content)
     return result
+
+
+def _is_error_result(result: Any) -> bool:
+    return bool(getattr(result, "isError", False) or getattr(result, "is_error", False))
 
 
 def decode_mcp_tools_result(result: Any) -> list[dict[str, Any]]:
