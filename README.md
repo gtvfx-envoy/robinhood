@@ -1,179 +1,118 @@
-# Robinhood Crypto Trading Repository
+# Robinhood Agentic Trading Bot
 
-Python interface and trading tools for Robinhood Crypto Trading API.
+This repository contains a Python-based agentic trading bot for Robinhood. The
+current focus is the `robinhood.agentic` package: a conservative, auditable
+daily-candle trading daemon that can review and place small live equity orders
+through Robinhood Agentic MCP.
 
-## Project Structure
+The bot is designed around explicit live-trading gates, hard risk limits,
+persistent daemon state, broker readback reconciliation, and JSONL decision
+journals. It is intended for controlled automation, not unattended high-risk
+trading.
 
-### `/py/robinhood_trading` - Clean API Interface (NEW ✨)
+## Documentation
 
-A professional Python interface to the Robinhood Crypto Trading API with:
-- **Secure encrypted credential storage**
-- **Complete API endpoint coverage**
-- **Clean, intuitive methods**
-- **Ready for trading bot integration**
+Published documentation:
 
-**[View Full Documentation →](py/robinhood_trading/README.md)**
+- [Documentation Site](https://gtvfx-contrib.github.io/robinhood/)
+- [Getting Started](https://gtvfx-contrib.github.io/robinhood/getting-started/)
+- [CLI Reference](https://gtvfx-contrib.github.io/robinhood/cli/)
+- [Risk Controls](https://gtvfx-contrib.github.io/robinhood/risk-controls/)
+- [Automation](https://gtvfx-contrib.github.io/robinhood/automation/)
+- [API Reference](https://gtvfx-contrib.github.io/robinhood/api/)
 
-Quick start:
-```python
-from robinhood_trading import RobinhoodClient, KeyManager
+Local source docs live under [py/docs](py/docs). The MkDocs site is built from
+[py/mkdocs.yml](py/mkdocs.yml) and published by
+[deploy-docs.yml](.github/workflows/deploy-docs.yml).
 
-# Load encrypted credentials
-manager = KeyManager()
-cipher_key = manager.load_cipher_key()
-client = RobinhoodClient.from_key_manager(manager, cipher_key=cipher_key)
+## What Is In This Repo
 
-# Get current price
-price = client.get_current_price("BTC-USD")
-print(f"BTC: ${price:,.2f}")
+- `py/robinhood/agentic`: the active agentic trading bot package.
+- `py/docs`: MkDocs documentation and generated API reference pages.
+- `py/tests`: focused unit tests for config, strategy, daemon state, broker
+  behavior, MCP parsing, and CLI workflows.
+- `.github/workflows`: CI plus GitHub Pages documentation deployment.
 
-# Place order
-order = client.place_market_order("BTC-USD", "buy", 0.001)
+Older Robinhood crypto API experiments may still exist in the repository, but
+the maintained runtime path is the `robinhood.agentic` package.
+
+## Core Runtime
+
+The persistent daemon command is:
+
+```powershell
+$env:SERVICE_ROOT='R:\service'
+en agentic run-daemon --candle-file R:\service\rh_daily_candles.json --range 1y --exit-when-done
 ```
 
-### `/crypto_trading_bot` - Legacy Trading Bot
+The daemon:
 
-Original trading bot implementation with:
-- Historical price aggregation
-- Machine learning integration
-- Real-time tracking
-- Performance metrics
+- uses regular-market clock state before trading
+- refreshes daily candles during pre-open warmup
+- evaluates configured daily trend lanes
+- places live orders only when explicit config gates are enabled
+- blocks additional orders while a submitted order is pending confirmation
+- reconciles broker readback before continuing
+- exits cleanly with `--exit-when-done` when no more trades can be made today
 
-### `/py/robinhood` - Utility Scripts
+## Private Runtime Files
 
-Various utility scripts and interfaces:
-- Key generation
-- Example implementations
-- Trading strategies (Bollinger Bands, Momentum)
+Keep account-specific configuration and trading state outside the repo. The
+default private root is:
 
-## Getting Started
-
-### 1. Install Dependencies
-
-```bash
-cd py/robinhood_trading
-pip install -r requirements.txt
+```text
+R:\service
 ```
 
-### 2. Generate API Keys
+Important files:
 
-```bash
-# Generate Ed25519 key pair
-python -m robinhood_trading.generate_keys
+- `R:\service\rh_agentic.json`: personal config, live gates, account number,
+  and risk limits.
+- `R:\service\rh_agentic_state.json`: persistent daemon state.
+- `R:\service\rh_agentic_decisions.jsonl`: decision and execution journal.
+- `R:\service\rh_daily_candles.json`: daily candle cache.
 
-# Copy public key and create API credential at:
-# https://robinhood.com/account/crypto
+Repo-local `logs/` directories are ignored intentionally. Trading logs can
+contain order identifiers, symbols, timestamps, fills, and account-sensitive
+runtime data.
+
+## Development
+
+Run commands from the Python project root:
+
+```powershell
+cd py
+python -m pip install -r requirements-dev.txt
 ```
 
-### 3. Setup Encrypted Storage
+Common checks:
 
-```bash
-# Encrypt and store your credentials
-python -m robinhood_trading.setup_keys
+```powershell
+python -m ruff check robinhood\agentic tests\test_agentic.py
+python -m ruff format --check robinhood\agentic tests\test_agentic.py
+python -m unittest discover -s tests -p test_agentic.py
+python -m mkdocs build --strict
 ```
 
-### 4. Start Trading
+Serve docs locally:
 
-```python
-# See examples/basic_usage.py for complete examples
-from robinhood_trading import RobinhoodClient, KeyManager
-
-manager = KeyManager()
-cipher_key = manager.load_cipher_key()
-client = RobinhoodClient.from_key_manager(manager, cipher_key=cipher_key)
-
-# Your trading code here...
+```powershell
+python -m mkdocs serve
 ```
 
-## Features
+## Automation
 
-### Secure Credential Management
-- AES-256 encryption via Fernet
-- File-based or password-based encryption
-- Never store keys in plain text
+For scheduled runs, prefer `run-daemon --exit-when-done`. This lets Task
+Scheduler or a service wrapper start the bot, let it reconcile and trade within
+configured limits, and exit once the trading day is complete or capacity is
+exhausted.
 
-### Complete API Coverage
-- **Account**: Get account details and buying power
-- **Market Data**: Best bid/ask, estimated prices, current prices
-- **Trading Pairs**: List and query available pairs
-- **Holdings**: View crypto holdings and balances
-- **Orders**: Place, query, and cancel orders (market and limit)
+See the [Automation documentation](https://gtvfx-contrib.github.io/robinhood/automation/)
+for daemon behavior, state reconciliation, market calendar support, and useful
+operator commands.
 
-### Trading Bot Ready
-- Clean API for integration with ML models
-- Helper methods for common operations
-- Proper error handling
-- Type hints throughout
+## Safety Notice
 
-## API Documentation
-
-Official Robinhood Crypto API docs:
-https://docs.robinhood.com/crypto/trading/
-
-## Examples
-
-See the `py/robinhood_trading/examples/` directory:
-- **basic_usage.py** - Account info, prices, holdings
-- **order_management.py** - Placing and managing orders
-- **trading_bot_integration.py** - Simple bot with moving averages
-
-## Rate Limits
-
-- 100 requests per minute per account
-- 300 requests per minute in bursts
-
-## Security Best Practices
-
-1. Never commit encrypted key files to git
-2. Keep private keys secret
-3. Use strong passwords for password-based encryption
-4. Backup encrypted keys securely
-5. Rotate keys regularly
-
-## Comparison: New vs Legacy
-
-| Feature | New (`robinhood_trading`) | Legacy |
-|---------|---------------------------|--------|
-| Credential Storage | Encrypted (AES-256) | Plain JSON file |
-| API Interface | Clean methods | Manual request building |
-| Type Safety | Full type hints | No types |
-| Documentation | Comprehensive | Limited |
-| Bot Integration | Easy integration | Coupled implementation |
-| Security | Industry standard | Basic |
-
-## Future Plans
-
-- [ ] Websocket support for real-time data
-- [ ] Advanced order types (stop-loss, stop-limit)
-- [ ] Portfolio analytics
-- [ ] Transaction history export
-- [ ] Paper trading mode
-- [ ] Unified interface for multiple exchanges
-
-## Contributing
-
-Contributions welcome! Areas for improvement:
-- Additional helper methods
-- More examples
-- Better error messages
-- Testing suite
-
-## Disclaimer
-
-**This software is for educational purposes only. Cryptocurrency trading carries significant risk.**
-
-- Test thoroughly before live trading
-- Understand the risks involved
-- Never trade more than you can afford to lose
-- This is not financial advice
-- Past performance does not guarantee future results
-
-## License
-
-See individual package licenses.
-
-## Support
-
-- **robinhood_trading**: See package README
-- **Robinhood API**: https://docs.robinhood.com
-- **Trading strategies**: Educational purposes only
+This software can place real orders when live gates are enabled. Review the risk
+configuration and start with small caps. This is not financial advice, and past
+strategy behavior does not guarantee future results.
