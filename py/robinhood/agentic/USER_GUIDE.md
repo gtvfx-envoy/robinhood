@@ -116,9 +116,9 @@ account number and, optionally, a token-store path:
 
 ```json
 {
-  "account_number": "551641152",
+  "account_number": "YOUR_ACCOUNT_NUMBER",
   "mcp_url": "https://agent.robinhood.com/mcp/trading",
-  "mcp_token_store_path": "R:/service/rh_agentic_mcp_tokens.json",
+  "mcp_token_store_path": "<SERVICE_ROOT>/rh_agentic_mcp_tokens.json",
   "mcp_oauth_callback_port": 8765
 }
 ```
@@ -161,7 +161,7 @@ Expected format:
 From the Python repo root:
 
 ```powershell
-cd C:\repo\gtvfx\robinhood\py
+cd <REPO_ROOT>\py
 $env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
 python -m robinhood.agentic.cli run
 ```
@@ -186,7 +186,7 @@ If the quote collector is not running yet, the session stays alive and prints
 skip messages such as:
 
 ```text
-MSFT: SKIP - quote for MSFT not found in R:\service\rh_quotes.json
+MSFT: SKIP - quote for MSFT not found in <SERVICE_ROOT>\rh_quotes.json
 ```
 
 To run one polling iteration for a smoke test:
@@ -218,7 +218,7 @@ for this strategy until the candle-aware broker session is added.
 From the Python repo root:
 
 ```powershell
-cd C:\repo\gtvfx\robinhood\py
+cd <REPO_ROOT>\py
 $env:SERVICE_ROOT='<PATH TO CONFIG ROOT>'
 python -m robinhood.agentic.cli backtest --portfolio --range 1y --starting-cash 100 --target-dollars 10 --min-order-dollars 1 --max-trade-dollars 15 --min-cash-reserve 50 --max-open-positions 2 --max-new-buys-per-day 1 --max-daily-trades 2 --max-total-exposure-dollars 50
 ```

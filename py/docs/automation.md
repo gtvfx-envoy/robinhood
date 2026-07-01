@@ -6,7 +6,7 @@ Use `run-daemon` for persistent market-aware operation. Keep
 ## Persistent Daemon
 
 ```powershell
-python -m robinhood.agentic.cli run-daemon --candle-file R:\service\rh_daily_candles.json --range 1y --max-live-order-dollars 5
+python -m robinhood.agentic.cli run-daemon --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y --max-live-order-dollars 5
 ```
 
 The persistent daemon:
@@ -23,7 +23,7 @@ Check the clock and state without trading:
 ```powershell
 python -m robinhood.agentic.cli market-clock
 python -m robinhood.agentic.cli daemon-state
-python -m robinhood.agentic.cli run-daemon --status-only --candle-file R:\service\rh_daily_candles.json
+python -m robinhood.agentic.cli run-daemon --status-only --candle-file <SERVICE_ROOT>\rh_daily_candles.json
 ```
 
 ## Operator State Commands
@@ -56,7 +56,7 @@ For holidays and half-days, add `market_calendar_path` to the personal config:
 
 ```json
 {
-  "market_calendar_path": "R:/service/market_calendar.json"
+  "market_calendar_path": "<SERVICE_ROOT>/market_calendar.json"
 }
 ```
 
@@ -76,7 +76,7 @@ The calendar file is optional. Missing files fall back to weekday regular hours.
 Review-only daily pass:
 
 ```powershell
-python -m robinhood.agentic.cli run-daily-daemon --review-only --candle-file R:\service\rh_daily_candles.json --range 1y
+python -m robinhood.agentic.cli run-daily-daemon --review-only --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y
 ```
 
 By default, the daemon checks once per minute and runs one daily pass at
@@ -87,7 +87,7 @@ By default, the daemon checks once per minute and runs one daily pass at
 After live config gates are intentionally enabled:
 
 ```powershell
-python -m robinhood.agentic.cli run-daily-daemon --candle-file R:\service\rh_daily_candles.json --range 1y --max-live-order-dollars 5
+python -m robinhood.agentic.cli run-daily-daemon --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y --max-live-order-dollars 5
 ```
 
 The daemon:
@@ -104,7 +104,7 @@ If a daily pass already wrote a completion marker but config was later fixed,
 rerun the current trading day explicitly:
 
 ```powershell
-python -m robinhood.agentic.cli run-daily-daemon --rerun-today --max-iterations 1 --candle-file R:\service\rh_daily_candles.json --range 1y --max-live-order-dollars 5
+python -m robinhood.agentic.cli run-daily-daemon --rerun-today --max-iterations 1 --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y --max-live-order-dollars 5
 ```
 
 `--rerun-today` ignores only today's existing `daily_daemon_pass` marker in

@@ -154,17 +154,17 @@ class AgenticBotTests(unittest.TestCase):
                         "broker": "agentic_mcp",
                         "mcp_url": "https://agent.robinhood.com/mcp/trading",
                         "mcp_bearer_token_env_var": "RH_MCP_TOKEN",
-                        "mcp_token_store_path": "R:/service/rh_agentic_mcp_tokens.json",
+                        "mcp_token_store_path": "X:/agentic-service/rh_agentic_mcp_tokens.json",
                         "mcp_oauth_callback_port": 8766,
                         "mcp_oauth_scope": "trading",
                         "dry_run": True,
                         "live_trading_enabled": False,
                         "auto_place_orders": False,
                         "live_order_confirm": LIVE_ORDER_CONFIRMATION,
-                        "journal_path": "R:/service/agentic_decisions.jsonl",
-                        "quote_source_path": "R:/service/rh_quotes.json",
-                        "daemon_state_path": "R:/service/rh_agentic_state.json",
-                        "market_calendar_path": "R:/service/market_calendar.json",
+                        "journal_path": "X:/agentic-service/agentic_decisions.jsonl",
+                        "quote_source_path": "X:/agentic-service/rh_quotes.json",
+                        "daemon_state_path": "X:/agentic-service/rh_agentic_state.json",
+                        "market_calendar_path": "X:/agentic-service/market_calendar.json",
                         "poll_seconds": 30,
                         "paper_starting_cash": 5000,
                         "pre_open_warmup_minutes": 10,
@@ -180,17 +180,17 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(config.broker, "agentic_mcp")
         self.assertEqual(config.mcp_url, "https://agent.robinhood.com/mcp/trading")
         self.assertEqual(config.mcp_bearer_token_env_var, "RH_MCP_TOKEN")
-        self.assertEqual(config.mcp_token_store_path, "R:/service/rh_agentic_mcp_tokens.json")
+        self.assertEqual(config.mcp_token_store_path, "X:/agentic-service/rh_agentic_mcp_tokens.json")
         self.assertEqual(config.mcp_oauth_callback_port, 8766)
         self.assertEqual(config.mcp_oauth_scope, "trading")
         self.assertTrue(config.dry_run)
         self.assertFalse(config.live_trading_enabled)
         self.assertFalse(config.auto_place_orders)
         self.assertEqual(config.live_order_confirm, LIVE_ORDER_CONFIRMATION)
-        self.assertEqual(config.journal_path, "R:/service/agentic_decisions.jsonl")
-        self.assertEqual(config.quote_source_path, "R:/service/rh_quotes.json")
-        self.assertEqual(config.daemon_state_path, "R:/service/rh_agentic_state.json")
-        self.assertEqual(config.market_calendar_path, "R:/service/market_calendar.json")
+        self.assertEqual(config.journal_path, "X:/agentic-service/agentic_decisions.jsonl")
+        self.assertEqual(config.quote_source_path, "X:/agentic-service/rh_quotes.json")
+        self.assertEqual(config.daemon_state_path, "X:/agentic-service/rh_agentic_state.json")
+        self.assertEqual(config.market_calendar_path, "X:/agentic-service/market_calendar.json")
         self.assertEqual(config.poll_seconds, 30.0)
         self.assertEqual(config.paper_starting_cash, 5000.0)
         self.assertEqual(config.pre_open_warmup_minutes, 10)
@@ -267,7 +267,7 @@ class AgenticBotTests(unittest.TestCase):
 
     def test_personal_config_path_uses_service_root(self):
         old_value = os.environ.get("SERVICE_ROOT")
-        os.environ["SERVICE_ROOT"] = "R:/service"
+        os.environ["SERVICE_ROOT"] = "X:/agentic-service"
         try:
             path = get_personal_config_path()
         finally:
@@ -276,7 +276,7 @@ class AgenticBotTests(unittest.TestCase):
             else:
                 os.environ["SERVICE_ROOT"] = old_value
 
-        self.assertEqual(path, Path("R:/service") / "rh_agentic.json")
+        self.assertEqual(path, Path("X:/agentic-service") / "rh_agentic.json")
 
     def test_mcp_review_parser_defaults(self):
         args = build_parser().parse_args(["mcp-review"])
@@ -1881,7 +1881,7 @@ class AgenticBotTests(unittest.TestCase):
         client = StreamableHttpMcpToolClient(
             "https://agent.robinhood.com/mcp/trading",
             bearer_token="secret",
-            oauth_token_store_path="R:/service/rh_agentic_mcp_tokens.json",
+            oauth_token_store_path="X:/agentic-service/rh_agentic_mcp_tokens.json",
         )
 
         self.assertIsNone(client._oauth_auth())

@@ -31,14 +31,14 @@ Example personal config:
 
 ```json
 {
-  "account_number": "551641152",
+  "account_number": "YOUR_ACCOUNT_NUMBER",
   "broker": "paper",
   "dry_run": true,
   "live_trading_enabled": false,
   "auto_place_orders": false,
   "live_order_confirm": "",
-  "journal_path": "R:/service/rh_agentic_decisions.jsonl",
-  "quote_source_path": "R:/service/rh_quotes.json",
+  "journal_path": "<SERVICE_ROOT>/rh_agentic_decisions.jsonl",
+  "quote_source_path": "<SERVICE_ROOT>/rh_quotes.json",
   "poll_seconds": 60.0,
   "paper_starting_cash": 100.0,
   "risk": {
@@ -82,9 +82,9 @@ standalone process should store the token response, then run `mcp-login`:
 
 ```json
 {
-  "account_number": "551641152",
+  "account_number": "YOUR_ACCOUNT_NUMBER",
   "mcp_url": "https://agent.robinhood.com/mcp/trading",
-  "mcp_token_store_path": "R:/service/rh_agentic_mcp_tokens.json",
+  "mcp_token_store_path": "<SERVICE_ROOT>/rh_agentic_mcp_tokens.json",
   "mcp_oauth_callback_port": 8765
 }
 ```
@@ -190,7 +190,7 @@ poll and decision lines.
 One-shot analysis:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<SERVICE_ROOT>'
 python -m robinhood.agentic.cli analyze --symbol AAPL --price 205 --previous-close 200
 ```
 
@@ -198,14 +198,14 @@ Backtest the ETF universe with the $100 account constraints as one shared-cash
 portfolio:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<SERVICE_ROOT>'
 python -m robinhood.agentic.cli backtest --portfolio --range 1y --starting-cash 100 --target-dollars 10 --min-order-dollars 1 --max-trade-dollars 15 --min-cash-reserve 50 --max-open-positions 2 --max-new-buys-per-day 1 --max-daily-trades 2 --max-total-exposure-dollars 50
 ```
 
 Check Agentic MCP broker connectivity in review-only mode:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<SERVICE_ROOT>'
 python -m robinhood.agentic.cli mcp-login
 python -m robinhood.agentic.cli mcp-check --symbol SPY
 ```
@@ -283,7 +283,7 @@ matching broker execution rows.
 Persistent paper session:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
+$env:SERVICE_ROOT='<SERVICE_ROOT>'
 python -m robinhood.agentic.cli run
 ```
 
@@ -303,12 +303,12 @@ The `run` command requires either `quote_source_path` in personal config or a
 CLI override:
 
 ```powershell
-python -m robinhood.agentic.cli run --quote-file R:\service\rh_quotes.json
+python -m robinhood.agentic.cli run --quote-file <SERVICE_ROOT>\rh_quotes.json
 ```
 
 ## Test
 
 ```powershell
-cd C:\repo\gtvfx\robinhood\py
+cd <REPO_ROOT>\py
 python -m unittest discover -s tests -p test_agentic.py
 ```

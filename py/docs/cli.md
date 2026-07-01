@@ -36,13 +36,13 @@ python -m robinhood.agentic.cli live-check --symbol SPY --dollars 1
 ## Daily Review
 
 ```powershell
-python -m robinhood.agentic.cli run-daily --review-only --candle-file R:\service\rh_daily_candles.json --range 1y
+python -m robinhood.agentic.cli run-daily --review-only --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y
 ```
 
 Use what-if overrides to test risk changes without changing personal config:
 
 ```powershell
-python -m robinhood.agentic.cli run-daily --review-only --what-if-max-open-positions 2 --what-if-max-total-exposure-dollars 50 --candle-file R:\service\rh_daily_candles.json --range 1y
+python -m robinhood.agentic.cli run-daily --review-only --what-if-max-open-positions 2 --what-if-max-total-exposure-dollars 50 --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y
 ```
 
 ## Read Orders

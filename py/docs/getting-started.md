@@ -3,13 +3,13 @@
 Run commands from the Python repo root:
 
 ```powershell
-cd C:\repo\gtvfx\robinhood\py
+cd <REPO_ROOT>\py
 ```
 
 Set `SERVICE_ROOT` to the private config/state directory:
 
 ```powershell
-$env:SERVICE_ROOT = "R:\service"
+$env:SERVICE_ROOT = "<SERVICE_ROOT>"
 ```
 
 The personal config is loaded from:
@@ -31,8 +31,8 @@ and live-trading gates. Keep it outside the repository.
   "live_trading_enabled": false,
   "auto_place_orders": false,
   "live_order_confirm": "",
-  "journal_path": "R:/service/rh_agentic_decisions.jsonl",
-  "quote_source_path": "R:/service/rh_quotes.json",
+  "journal_path": "<SERVICE_ROOT>/rh_agentic_decisions.jsonl",
+  "quote_source_path": "<SERVICE_ROOT>/rh_quotes.json",
   "paper_starting_cash": 100.0,
   "risk": {
     "min_order_dollars": 1.0,

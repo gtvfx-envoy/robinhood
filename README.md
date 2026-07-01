@@ -41,8 +41,8 @@ the maintained runtime path is the `robinhood.agentic` package.
 The persistent daemon command is:
 
 ```powershell
-$env:SERVICE_ROOT='R:\service'
-en agentic run-daemon --candle-file R:\service\rh_daily_candles.json --range 1y --exit-when-done
+$env:SERVICE_ROOT='<SERVICE_ROOT>'
+en agentic run-daemon --candle-file <SERVICE_ROOT>\rh_daily_candles.json --range 1y --exit-when-done
 ```
 
 The daemon:
@@ -57,20 +57,20 @@ The daemon:
 
 ## Private Runtime Files
 
-Keep account-specific configuration and trading state outside the repo. The
-default private root is:
+Keep account-specific configuration and trading state outside the repo. Set
+`SERVICE_ROOT` to that private runtime directory:
 
 ```text
-R:\service
+<SERVICE_ROOT>
 ```
 
 Important files:
 
-- `R:\service\rh_agentic.json`: personal config, live gates, account number,
+- `<SERVICE_ROOT>\rh_agentic.json`: personal config, live gates, account number,
   and risk limits.
-- `R:\service\rh_agentic_state.json`: persistent daemon state.
-- `R:\service\rh_agentic_decisions.jsonl`: decision and execution journal.
-- `R:\service\rh_daily_candles.json`: daily candle cache.
+- `<SERVICE_ROOT>\rh_agentic_state.json`: persistent daemon state.
+- `<SERVICE_ROOT>\rh_agentic_decisions.jsonl`: decision and execution journal.
+- `<SERVICE_ROOT>\rh_daily_candles.json`: daily candle cache.
 
 Repo-local `logs/` directories are ignored intentionally. Trading logs can
 contain order identifiers, symbols, timestamps, fills, and account-sensitive
