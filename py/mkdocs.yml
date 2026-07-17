@@ -9,6 +9,8 @@ nav:
   - CLI: cli.md
   - Risk Controls: risk-controls.md
   - Automation: automation.md
+  - Deployment Readiness: readiness.md
+  - Validation Protocol: validation.md
   - API Reference:
       - Overview: api/index.md
       - Config: api/config.md

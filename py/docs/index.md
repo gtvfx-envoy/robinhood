@@ -19,6 +19,8 @@ small dollar caps, journaled audit events, and broker-side review.
 - [CLI](cli.md): common command-line workflows.
 - [Risk Controls](risk-controls.md): how the portfolio and order caps work.
 - [Automation](automation.md): daily daemon operation.
+- [Deployment Readiness](readiness.md): stage gates and incident procedure.
+- [Validation Protocol](validation.md): research and read-only MCP checks.
 - [API Reference](api/index.md): generated Python reference via `mkdocstrings`.
 
 ## Build The Docs

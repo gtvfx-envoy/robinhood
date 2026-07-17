@@ -35,6 +35,7 @@ class OrderIntent:
     symbol: str
     side: str
     order_type: str = "market"
+    asset_class: str = "equity"
     dollar_amount: float | None = None
     quantity: float | None = None
     limit_price: float | None = None
@@ -45,15 +46,19 @@ class OrderIntent:
     def __post_init__(self) -> None:
         normalized_side = self.side.lower()
         normalized_type = self.order_type.lower()
+        normalized_asset_class = self.asset_class.lower()
         if normalized_side not in {"buy", "sell"}:
             raise ValueError("order side must be buy or sell")
         if normalized_type not in {"market", "limit", "stop_market", "stop_limit"}:
             raise ValueError("unsupported order type")
+        if normalized_asset_class not in {"equity", "crypto"}:
+            raise ValueError("asset_class must be equity or crypto")
         if (self.dollar_amount is None) == (self.quantity is None):
             raise ValueError("provide exactly one of dollar_amount or quantity")
         object.__setattr__(self, "symbol", self.symbol.upper())
         object.__setattr__(self, "side", normalized_side)
         object.__setattr__(self, "order_type", normalized_type)
+        object.__setattr__(self, "asset_class", normalized_asset_class)
 
 
 @dataclass(frozen=True)

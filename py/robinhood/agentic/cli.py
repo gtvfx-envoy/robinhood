@@ -19,6 +19,7 @@ from .broker import AccountSnapshot, OrderIntent, OrderResult, OrderReview
 from .config import LIVE_ORDER_CONFIRMATION, AgenticConfig, get_personal_config_path, load_config
 from .daemon import PersistentDaemon
 from .daemon_state import (
+    DaemonLease,
     DaemonState,
     DaemonStateStore,
     PendingOrderState,
@@ -29,7 +30,13 @@ from .daemon_state import (
 )
 from .journal import DecisionJournal
 from .market_clock import MarketCalendar, MarketClock
-from .market_data import CandleCollector, QuoteCollector, YahooChartMarketDataSource, YahooDailyCandleSource
+from .market_data import (
+    CandleCollector,
+    QuoteCollector,
+    ValidatedHistoricalMarketDataSource,
+    YahooChartMarketDataSource,
+    YahooDailyCandleSource,
+)
 from .mcp_broker import AgenticMcpEquityBroker
 from .mcp_client import StreamableHttpMcpToolClient
 from .quotes import JsonQuoteProvider, ManualQuoteProvider
@@ -64,21 +71,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_check = subparsers.add_parser("mcp-check", help="Check Agentic MCP broker connectivity.")
     mcp_check.add_argument("--symbol", default="SPY", help="Symbol to check tradability for.")
+    mcp_check.add_argument("--asset-class", choices=("equity", "crypto"), default="equity")
     _add_common_args(mcp_check)
 
-    mcp_review = subparsers.add_parser("mcp-review", help="Review an MCP equity order without placing it.")
+    mcp_review = subparsers.add_parser("mcp-review", help="Review an MCP equity or crypto order without placing it.")
     mcp_review.add_argument("--symbol", default="SPY", help="Symbol to review.")
     mcp_review.add_argument("--dollars", type=float, default=1.0, help="Dollar amount for buy review.")
+    mcp_review.add_argument("--asset-class", choices=("equity", "crypto"), default="equity")
     _add_common_args(mcp_review)
 
     live_check = subparsers.add_parser("live-check", help="Check live-placement readiness without placing orders.")
     live_check.add_argument("--symbol", default="SPY", help="Symbol to review for readiness.")
     live_check.add_argument("--dollars", type=float, default=1.0, help="Dollar amount for readiness review.")
+    live_check.add_argument("--asset-class", choices=("equity", "crypto"), default="equity")
     _add_common_args(live_check)
 
-    mcp_place_once = subparsers.add_parser("mcp-place-once", help="Place one live MCP equity order.")
+    mcp_place_once = subparsers.add_parser("mcp-place-once", help="Place one live MCP equity or crypto order.")
     mcp_place_once.add_argument("--symbol", required=True, help="Symbol to buy.")
     mcp_place_once.add_argument("--dollars", type=float, required=True, help="Dollar amount to buy.")
+    mcp_place_once.add_argument("--asset-class", choices=("equity", "crypto"), default="equity")
     _add_common_args(mcp_place_once)
 
     mcp_login = subparsers.add_parser("mcp-login", help="Authorize the standalone Agentic MCP client.")
@@ -223,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exit once today's lanes are complete or live trading capacity is exhausted.",
     )
     run_daemon.add_argument("--state-file", type=Path, help="Daemon state JSON path.")
+    run_daemon.add_argument("--lease-file", type=Path, help="Exclusive daemon lease path (defaults beside state).")
     run_daemon.add_argument(
         "--max-live-order-dollars",
         type=float,
@@ -443,9 +455,10 @@ def main() -> int:
                 max_live_orders_per_process=max_live_orders_per_process,
             )
 
+        state_path = _daemon_state_path(daemon_config, args.state_file)
         daemon = PersistentDaemon(
             config=daemon_config,
-            state_store=DaemonStateStore(_daemon_state_path(daemon_config, args.state_file)),
+            state_store=DaemonStateStore(state_path),
             broker_factory=broker_factory,
             candle_file=args.candle_file,
             candle_range=args.range,
@@ -463,11 +476,13 @@ def main() -> int:
                 state,
             )["state"],
         )
-        result = daemon.run(
-            max_iterations=args.max_iterations,
-            status_only=args.status_only,
-            exit_when_done=args.exit_when_done,
-        )
+        lease_path = args.lease_file or state_path.with_suffix(".lease.json")
+        with DaemonLease(lease_path):
+            result = daemon.run(
+                max_iterations=args.max_iterations,
+                status_only=args.status_only,
+                exit_when_done=args.exit_when_done,
+            )
         print(
             "[summary] "
             f"iterations={result.iterations} decisions={result.decisions} "
@@ -500,7 +515,9 @@ def main() -> int:
         )
         session = DailyCandleBrokerSession(
             config=config,
-            candle_collector=CandleCollector(YahooDailyCandleSource(), args.candle_file),
+            candle_collector=CandleCollector(
+                ValidatedHistoricalMarketDataSource(YahooDailyCandleSource()), args.candle_file
+            ),
             broker=broker,
             bot=bot,
             candle_range=args.range,
@@ -561,7 +578,9 @@ def main() -> int:
                 )
                 session = DailyCandleBrokerSession(
                     config=effective_config,
-                    candle_collector=CandleCollector(YahooDailyCandleSource(), args.candle_file),
+                    candle_collector=CandleCollector(
+                        ValidatedHistoricalMarketDataSource(YahooDailyCandleSource()), args.candle_file
+                    ),
                     broker=broker,
                     bot=bot,
                     candle_range=args.range,
@@ -665,7 +684,7 @@ def main() -> int:
             raise SystemExit("mcp-check requires account_number in personal config")
         broker = _build_review_only_mcp_broker(config)
         snapshot = broker.get_account_snapshot()
-        intent = broker.review_order(_mcp_check_intent(args.symbol), price=100.0)
+        intent = broker.review_order(_mcp_check_intent(args.symbol, args.asset_class), price=100.0)
         print(
             f"account_cash=${snapshot.cash:.2f} "
             f"positions={len(snapshot.positions)} "
@@ -679,7 +698,7 @@ def main() -> int:
     if args.command == "mcp-review":
         if not config.account_number:
             raise SystemExit("mcp-review requires account_number in personal config")
-        intent = _mcp_review_intent(args.symbol, args.dollars)
+        intent = _mcp_review_intent(args.symbol, args.dollars, args.asset_class)
         broker = _build_review_only_mcp_broker(config)
         snapshot = broker.get_account_snapshot()
         review = broker.review_order(intent, price=100.0)
@@ -687,6 +706,7 @@ def main() -> int:
             f"account_cash=${snapshot.cash:.2f} "
             f"positions={len(snapshot.positions)} "
             f"symbol={intent.symbol} "
+            f"asset_class={intent.asset_class} "
             f"side={intent.side} "
             f"dollars=${intent.dollar_amount:.2f} "
             f"review_approved={review.approved} "
@@ -704,7 +724,7 @@ def main() -> int:
     if args.command == "live-check":
         if not config.account_number:
             raise SystemExit("live-check requires account_number in personal config")
-        intent = _mcp_review_intent(args.symbol, args.dollars)
+        intent = _mcp_review_intent(args.symbol, args.dollars, args.asset_class)
         broker = _build_review_only_mcp_broker(config)
         snapshot = broker.get_account_snapshot()
         review = broker.review_order(intent, price=100.0)
@@ -714,6 +734,7 @@ def main() -> int:
             f"account_cash=${snapshot.cash:.2f} "
             f"positions={len(snapshot.positions)} "
             f"symbol={intent.symbol} "
+            f"asset_class={intent.asset_class} "
             f"dollars=${intent.dollar_amount:.2f} "
             f"review_approved={review.approved}"
         )
@@ -730,7 +751,7 @@ def main() -> int:
     if args.command == "mcp-place-once":
         if not config.account_number:
             raise SystemExit("mcp-place-once requires account_number in personal config")
-        intent = _mcp_review_intent(args.symbol, args.dollars)
+        intent = _mcp_review_intent(args.symbol, args.dollars, args.asset_class)
         review_broker = _build_review_only_mcp_broker(config)
         snapshot = review_broker.get_account_snapshot()
         review = review_broker.review_order(intent, price=100.0)
@@ -739,6 +760,7 @@ def main() -> int:
             print(
                 f"readiness=FAIL account_cash=${snapshot.cash:.2f} "
                 f"positions={len(snapshot.positions)} symbol={intent.symbol} "
+                f"asset_class={intent.asset_class} "
                 f"dollars=${intent.dollar_amount:.2f} review_approved={review.approved}"
             )
             for failure in failures:
@@ -759,7 +781,7 @@ def main() -> int:
         _journal_place_once(config, result)
         print(
             f"order_status={result.status} placed={result.placed} "
-            f"symbol={intent.symbol} dollars=${intent.dollar_amount:.2f} "
+            f"symbol={intent.symbol} asset_class={intent.asset_class} dollars=${intent.dollar_amount:.2f} "
             f"reason={result.reason}"
         )
         if result.order_id:
@@ -843,14 +865,14 @@ def main() -> int:
     return 0
 
 
-def _mcp_check_intent(symbol: str) -> OrderIntent:
-    return OrderIntent(symbol=symbol, side="buy", dollar_amount=1.0)
+def _mcp_check_intent(symbol: str, asset_class: str = "equity") -> OrderIntent:
+    return OrderIntent(symbol=symbol, side="buy", asset_class=asset_class, dollar_amount=1.0)
 
 
-def _mcp_review_intent(symbol: str, dollars: float) -> OrderIntent:
+def _mcp_review_intent(symbol: str, dollars: float, asset_class: str = "equity") -> OrderIntent:
     if dollars <= 0:
         raise SystemExit("mcp-review requires --dollars greater than 0")
-    return OrderIntent(symbol=symbol, side="buy", dollar_amount=round(dollars, 2))
+    return OrderIntent(symbol=symbol, side="buy", asset_class=asset_class, dollar_amount=round(dollars, 2))
 
 
 def _build_review_only_mcp_broker(config) -> AgenticMcpEquityBroker:

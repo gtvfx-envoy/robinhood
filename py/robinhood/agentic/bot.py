@@ -31,6 +31,9 @@ class AgenticBot:
         quote: QuoteSnapshot,
         daily_trade_count: int = 0,
         strategy_name: str = "simple_momentum",
+        has_position: bool | None = None,
+        entry_price: float | None = None,
+        peak_price: float | None = None,
     ) -> JournalEntry:
         strategy = self._strategies.get(strategy_name)
         if strategy is None:
@@ -40,7 +43,18 @@ class AgenticBot:
             )
             self._strategies[strategy_name] = strategy
 
-        decision = strategy.evaluate(quote)
+        if has_position is None:
+            decision = strategy.evaluate(quote)
+        else:
+            try:
+                decision = strategy.evaluate(
+                    quote,
+                    has_position=has_position,
+                    entry_price=entry_price,
+                    peak_price=peak_price,
+                )
+            except TypeError:
+                decision = strategy.evaluate(quote)
         risk = self.risk.evaluate(decision, daily_trade_count=daily_trade_count)
         return self.journal.append(
             quote=quote,

@@ -19,7 +19,7 @@ class McpToolClient(Protocol):
 
 
 class AgenticMcpEquityBroker(Broker):
-    """Broker implementation backed by Robinhood Agentic MCP equity tools."""
+    """Broker implementation backed by Robinhood Agentic MCP equity and crypto tools."""
 
     def __init__(
         self,
@@ -46,6 +46,9 @@ class AgenticMcpEquityBroker(Broker):
         positions_payload = _as_mapping(
             self.client.call_tool("get_equity_positions", {"account_number": self.account_number})
         )
+        crypto_positions_payload = _as_mapping(
+            _safe_call_tool(self.client, "get_crypto_holdings", {"account_number": self.account_number})
+        )
         cash = _extract_float(
             portfolio,
             (
@@ -56,12 +59,19 @@ class AgenticMcpEquityBroker(Broker):
                 "buying_power.unleveraged_buying_power",
             ),
         )
+        positions = _extract_positions(positions_payload)
+        positions.update(_extract_crypto_positions(crypto_positions_payload))
         return AccountSnapshot(
             cash=cash,
-            positions=_extract_positions(positions_payload),
+            positions=positions,
         )
 
     def review_order(self, intent: OrderIntent, price: float) -> OrderReview:
+        if intent.asset_class == "crypto":
+            return self._review_crypto_order(intent, price)
+        return self._review_equity_order(intent, price)
+
+    def _review_equity_order(self, intent: OrderIntent, price: float) -> OrderReview:
         tradability = self.client.call_tool(
             "get_equity_tradability",
             {
@@ -79,17 +89,33 @@ class AgenticMcpEquityBroker(Broker):
                 raw=tradability,
             )
 
-        payload = self.client.call_tool("review_equity_order", self._order_arguments(intent))
+        payload = self.client.call_tool("review_equity_order", self._order_arguments(intent, price=price))
+        return self._review_from_payload(intent, payload)
+
+    def _review_crypto_order(self, intent: OrderIntent, price: float) -> OrderReview:
+        try:
+            payload = self.client.call_tool("review_crypto_order", self._order_arguments(intent, price=price))
+        except Exception as exc:
+            return OrderReview(
+                intent=intent,
+                approved=False,
+                reason=f"crypto MCP review failed: {exc}",
+            )
+        return self._review_from_payload(intent, payload)
+
+    def _review_from_payload(self, intent: OrderIntent, payload: Any) -> OrderReview:
         review = _as_mapping(payload)
         alerts = tuple(_extract_alerts(review))
-        approved = not _has_blocking_alert(alerts, review)
+        approved = _review_is_approved(review, alerts)
         return OrderReview(
             intent=intent,
             approved=approved,
             reason="mcp review approved" if approved else "mcp review blocked",
             estimated_price=_extract_optional_float(review, ("last_trade_price", "price", "estimated_price")),
-            estimated_quantity=_extract_optional_float(review, ("quantity", "estimated_quantity", "estimated_shares")),
-            estimated_cost=_extract_optional_float(review, ("estimated_cost", "notional", "dollar_amount")),
+            estimated_quantity=_extract_optional_float(
+                review, ("quantity", "asset_quantity", "estimated_quantity", "estimated_shares")
+            ),
+            estimated_cost=_extract_optional_float(review, ("estimated_cost", "notional", "quote_amount", "dollar_amount")),
             alerts=alerts,
             raw=payload,
         )
@@ -135,7 +161,11 @@ class AgenticMcpEquityBroker(Broker):
             )
 
         self._live_order_attempts += 1
-        payload = self.client.call_tool("place_equity_order", self._order_arguments(intent, include_ref_id=True))
+        placement_tool = "place_crypto_order" if intent.asset_class == "crypto" else "place_equity_order"
+        payload = self.client.call_tool(
+            placement_tool,
+            self._order_arguments(intent, price=price, include_ref_id=True),
+        )
         result = _as_mapping(payload)
         placement_error = _placement_error_reason(result)
         if placement_error:
@@ -154,7 +184,7 @@ class AgenticMcpEquityBroker(Broker):
                 status="unconfirmed",
                 reason=f"mcp order submission unconfirmed: missing order id ({_payload_summary(result)})",
                 order_id="",
-                filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
+                filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")),
                 average_price=_extract_float(result, ("average_price", "price")),
                 raw=payload,
             )
@@ -166,12 +196,15 @@ class AgenticMcpEquityBroker(Broker):
             status=_extract_order_status(result),
             reason="mcp order submitted",
             order_id=order_id,
-            filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "quantity")),
+            filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")),
             average_price=_extract_float(result, ("average_price", "price")),
             raw=payload,
         )
 
-    def _order_arguments(self, intent: OrderIntent, include_ref_id: bool = False) -> dict[str, Any]:
+    def _order_arguments(self, intent: OrderIntent, price: float = 0.0, include_ref_id: bool = False) -> dict[str, Any]:
+        if intent.asset_class == "crypto":
+            return self._crypto_order_arguments(intent, price=price, include_ref_id=include_ref_id)
+
         arguments: dict[str, Any] = {
             "account_number": self.account_number,
             "symbol": intent.symbol,
@@ -184,6 +217,29 @@ class AgenticMcpEquityBroker(Broker):
             arguments["dollar_amount"] = f"{intent.dollar_amount:.2f}"
         if intent.quantity is not None:
             arguments["quantity"] = f"{intent.quantity:.6f}".rstrip("0").rstrip(".")
+        if intent.limit_price is not None:
+            arguments["limit_price"] = f"{intent.limit_price:.2f}"
+        if include_ref_id:
+            arguments["ref_id"] = intent.ref_id
+        return arguments
+
+    def _crypto_order_arguments(
+        self,
+        intent: OrderIntent,
+        price: float,
+        include_ref_id: bool = False,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "account_number": self.account_number,
+            "symbol": _to_crypto_pair(intent.symbol),
+            "side": intent.side,
+            "type": intent.order_type,
+        }
+        quantity = intent.quantity
+        if quantity is None and intent.dollar_amount is not None and price > 0:
+            quantity = intent.dollar_amount / price
+        if quantity is not None:
+            arguments["asset_quantity"] = _format_crypto_quantity(quantity)
         if intent.limit_price is not None:
             arguments["limit_price"] = f"{intent.limit_price:.2f}"
         if include_ref_id:
@@ -216,7 +272,10 @@ class AgenticMcpEquityBroker(Broker):
 
 
 def _extract_order_id(payload: dict[str, Any]) -> str:
-    return str(_first_matching_key(payload, ("id", "order_id", "equity_order_id", "client_order_id")) or "")
+    return str(
+        _first_matching_key(payload, ("id", "order_id", "equity_order_id", "crypto_order_id", "client_order_id"))
+        or ""
+    )
 
 
 def _extract_order_status(payload: dict[str, Any]) -> str:
@@ -233,6 +292,8 @@ def _first_matching_key(value: Any, keys: tuple[str, ...]) -> Any:
             "order",
             "equity_order",
             "equity_order_result",
+            "crypto_order",
+            "crypto_order_result",
             "result",
             "data",
             "payload",
@@ -304,6 +365,13 @@ def _as_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _safe_call_tool(client: McpToolClient, name: str, arguments: dict[str, Any]) -> Any:
+    try:
+        return client.call_tool(name, arguments)
+    except Exception as exc:
+        return {"is_error": True, "error": str(exc)}
+
+
 def _extract_float(payload: dict[str, Any], keys: tuple[str, ...]) -> float:
     value = _extract_optional_float(payload, keys)
     return value if value is not None else 0.0
@@ -350,6 +418,48 @@ def _extract_positions(payload: dict[str, Any]) -> dict[str, Position]:
     return positions
 
 
+def _extract_crypto_positions(payload: dict[str, Any]) -> dict[str, Position]:
+    if payload.get("is_error"):
+        return {}
+    raw_positions = payload.get("results") or payload.get("holdings") or payload.get("positions") or []
+    positions: dict[str, Position] = {}
+    if not isinstance(raw_positions, list):
+        return positions
+
+    for raw in raw_positions:
+        if not isinstance(raw, dict):
+            continue
+        symbol = _crypto_asset_code(raw)
+        if not symbol:
+            continue
+        quantity = _extract_float(
+            raw,
+            (
+                "quantity_available_for_trading",
+                "total_quantity",
+                "quantity",
+                "available_quantity",
+                "balance",
+            ),
+        )
+        if quantity <= 0:
+            continue
+        average_cost = _extract_float(raw, ("average_cost", "average_buy_price", "avg_cost", "cost_basis_price"))
+        if average_cost <= 0:
+            total_cost = _extract_float(raw, ("cost_basis", "total_cost"))
+            average_cost = total_cost / quantity if total_cost > 0 else 0.0
+        positions[symbol] = Position(symbol=symbol, quantity=quantity, average_cost=average_cost)
+    return positions
+
+
+def _crypto_asset_code(raw: dict[str, Any]) -> str:
+    value = raw.get("asset_code") or raw.get("currency_code") or raw.get("code") or raw.get("symbol") or ""
+    text = str(value).upper()
+    if "-" in text:
+        text = text.split("-", 1)[0]
+    return text
+
+
 def _tradability_alerts(payload: Any, symbol: str) -> list[str]:
     data = _as_mapping(payload)
     entries = data.get("results") or data.get("symbols") or []
@@ -391,3 +501,25 @@ def _has_blocking_alert(alerts: tuple[str, ...], payload: dict[str, Any]) -> boo
         return True
     blocking_words = ("blocked", "reject", "halt", "insufficient", "not eligible", "pdt")
     return any(any(word in alert.lower() for word in blocking_words) for alert in alerts)
+
+
+def _review_is_approved(payload: dict[str, Any], alerts: tuple[str, ...]) -> bool:
+    if not payload or payload.get("is_error"):
+        return False
+    if _has_blocking_alert(alerts, payload):
+        return False
+    state = str(payload.get("status") or payload.get("state") or "").lower()
+    if state in {"rejected", "blocked", "error", "failed"}:
+        return False
+    return True
+
+
+def _to_crypto_pair(symbol: str) -> str:
+    normalized = symbol.upper()
+    if "-" in normalized:
+        return normalized
+    return f"{normalized}-USD"
+
+
+def _format_crypto_quantity(quantity: float) -> str:
+    return f"{quantity:.8f}".rstrip("0").rstrip(".")

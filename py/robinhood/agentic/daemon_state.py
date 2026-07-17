@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +67,64 @@ class DaemonStateStore:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
         tmp_path.replace(self.path)
+
+
+class DaemonLease:
+    """An exclusive, operator-visible lease for one daemon process.
+
+    Stale leases are never removed automatically. Operators must confirm the
+    original process is stopped before using an explicit recovery procedure.
+    """
+
+    def __init__(self, path: Path | str, owner_id: str | None = None):
+        self.path = Path(path)
+        self.owner_id = owner_id or str(uuid.uuid4())
+        self._acquired = False
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "owner_id": self.owner_id,
+            "pid": os.getpid(),
+            "hostname": socket.gethostname(),
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        try:
+            with self.path.open("x", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+        except FileExistsError as exc:
+            raise RuntimeError(f"daemon lease already held: {self.describe()}") from exc
+        self._acquired = True
+
+    def release(self) -> None:
+        if not self._acquired:
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if payload.get("owner_id") == self.owner_id:
+            self.path.unlink(missing_ok=True)
+        self._acquired = False
+
+    def describe(self) -> str:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return str(self.path)
+        return (
+            f"path={self.path} owner_id={payload.get('owner_id', '-')} "
+            f"pid={payload.get('pid', '-')} hostname={payload.get('hostname', '-')} "
+            f"started_at={payload.get('started_at', '-')}"
+        )
+
+    def __enter__(self) -> DaemonLease:
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.release()
 
 
 def daemon_state_summary(state: DaemonState, path: Path | str | None = None) -> str:

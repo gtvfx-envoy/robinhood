@@ -17,6 +17,7 @@ The persistent daemon:
 - stores restart-safe operational state in `$SERVICE_ROOT\rh_agentic_state.json`
 - enforces daily live order attempt and notional limits from state
 - blocks new live orders while an order is pending or unconfirmed
+- acquires an exclusive state-directory lease; a second daemon exits before it can trade
 
 Check the clock and state without trading:
 
@@ -49,6 +50,12 @@ python -m robinhood.agentic.cli daemon-clear-pending --reason "broker readback c
 
 The clear command requires `--reason`, writes the updated state file, and journals
 the operator action with the orders that were cleared.
+
+The lease file defaults beside the state file as `rh_agentic_state.lease.json`.
+It records the process owner, PID, host, and start time. Never delete a lease
+while its process may still be running; stop and reconcile that process first.
+Use `--lease-file` only when the service wrapper has a deliberately separate
+private runtime path.
 
 ## Market Calendar
 
