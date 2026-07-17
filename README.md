@@ -19,6 +19,7 @@ Published documentation:
 - [CLI Reference](https://gtvfx-contrib.github.io/robinhood/cli/)
 - [Risk Controls](https://gtvfx-contrib.github.io/robinhood/risk-controls/)
 - [Automation](https://gtvfx-contrib.github.io/robinhood/automation/)
+- [Legal and Trading Disclaimer](DISCLAIMER.md)
 - [API Reference](https://gtvfx-contrib.github.io/robinhood/api/)
 
 Local source docs live under [py/docs](py/docs). The MkDocs site is built from
@@ -115,4 +116,5 @@ operator commands.
 
 This software can place real orders when live gates are enabled. Review the risk
 configuration and start with small caps. This is not financial advice, and past
-strategy behavior does not guarantee future results.
+strategy behavior does not guarantee future results. Read the
+[Legal and Trading Disclaimer](DISCLAIMER.md) before using live trading features.

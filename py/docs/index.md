@@ -21,6 +21,7 @@ small dollar caps, journaled audit events, and broker-side review.
 - [Automation](automation.md): daily daemon operation.
 - [Deployment Readiness](readiness.md): stage gates and incident procedure.
 - [Validation Protocol](validation.md): research and read-only MCP checks.
+- [Legal and Trading Disclaimer](disclaimer.md): repo usage and risk disclaimer.
 - [API Reference](api/index.md): generated Python reference via `mkdocstrings`.
 
 ## Build The Docs
