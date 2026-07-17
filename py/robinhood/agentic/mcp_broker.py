@@ -115,7 +115,9 @@ class AgenticMcpEquityBroker(Broker):
             estimated_quantity=_extract_optional_float(
                 review, ("quantity", "asset_quantity", "estimated_quantity", "estimated_shares")
             ),
-            estimated_cost=_extract_optional_float(review, ("estimated_cost", "notional", "quote_amount", "dollar_amount")),
+            estimated_cost=_extract_optional_float(
+                review, ("estimated_cost", "notional", "quote_amount", "dollar_amount")
+            ),
             alerts=alerts,
             raw=payload,
         )
@@ -184,7 +186,9 @@ class AgenticMcpEquityBroker(Broker):
                 status="unconfirmed",
                 reason=f"mcp order submission unconfirmed: missing order id ({_payload_summary(result)})",
                 order_id="",
-                filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")),
+                filled_quantity=_extract_float(
+                    result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")
+                ),
                 average_price=_extract_float(result, ("average_price", "price")),
                 raw=payload,
             )
@@ -196,7 +200,9 @@ class AgenticMcpEquityBroker(Broker):
             status=_extract_order_status(result),
             reason="mcp order submitted",
             order_id=order_id,
-            filled_quantity=_extract_float(result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")),
+            filled_quantity=_extract_float(
+                result, ("filled_quantity", "executed_quantity", "asset_quantity", "quantity")
+            ),
             average_price=_extract_float(result, ("average_price", "price")),
             raw=payload,
         )
@@ -273,8 +279,7 @@ class AgenticMcpEquityBroker(Broker):
 
 def _extract_order_id(payload: dict[str, Any]) -> str:
     return str(
-        _first_matching_key(payload, ("id", "order_id", "equity_order_id", "crypto_order_id", "client_order_id"))
-        or ""
+        _first_matching_key(payload, ("id", "order_id", "equity_order_id", "crypto_order_id", "client_order_id")) or ""
     )
 
 
