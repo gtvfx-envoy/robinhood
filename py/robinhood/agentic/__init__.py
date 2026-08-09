@@ -26,7 +26,7 @@ from .config import (
     load_lanes,
 )
 from .daemon import PersistentDaemon, StateBackedBroker
-from .daemon_state import DaemonState, DaemonStateStore, PendingOrderState
+from .daemon_state import DaemonLease, DaemonState, DaemonStateStore, PendingOrderState
 from .execution import ExecutionPlan, plan_order_intent
 from .market_clock import MarketCalendar, MarketClock, MarketClockStatus
 from .market_data import (
@@ -38,8 +38,10 @@ from .market_data import (
     QuoteCollector,
     StaticHistoricalMarketDataSource,
     StaticMarketDataSource,
+    ValidatedHistoricalMarketDataSource,
     YahooChartMarketDataSource,
     YahooDailyCandleSource,
+    validate_daily_candles,
 )
 from .mcp_broker import AgenticMcpEquityBroker, McpToolClient
 from .mcp_client import (
@@ -51,6 +53,7 @@ from .quotes import JsonQuoteProvider, ManualQuoteProvider, QuoteProvider, Quote
 from .session import BrokerSession, PaperSession
 from .strategy import (
     CryptoScalpStrategy,
+    CryptoTrendSnapshot,
     DailyTrendFollowStrategy,
     Decision,
     QuoteSnapshot,
@@ -68,7 +71,9 @@ __all__ = [
     "Candle",
     "CandleCollector",
     "CryptoScalpStrategy",
+    "CryptoTrendSnapshot",
     "DaemonState",
+    "DaemonLease",
     "DaemonStateStore",
     "DailyTrendFollowStrategy",
     "Decision",
@@ -106,6 +111,7 @@ __all__ = [
     "StreamableHttpMcpToolClient",
     "SymbolConfig",
     "YahooDailyCandleSource",
+    "ValidatedHistoricalMarketDataSource",
     "YahooChartMarketDataSource",
     "load_config",
     "load_lanes",
@@ -113,4 +119,5 @@ __all__ = [
     "plan_order_intent",
     "run_daily_trend_backtest",
     "run_daily_trend_portfolio_backtest",
+    "validate_daily_candles",
 ]

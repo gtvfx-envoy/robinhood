@@ -72,6 +72,7 @@ class PersonalConfig:
     paper_starting_cash: float = 10000.0
     pre_open_warmup_minutes: int = 5
     regular_trading_only: bool = True
+    max_candle_staleness_days: int = 5
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class AgenticConfig:
     paper_starting_cash: float = 10000.0
     pre_open_warmup_minutes: int = 5
     regular_trading_only: bool = True
+    max_candle_staleness_days: int = 5
     symbols: SymbolConfig = field(default_factory=SymbolConfig)
     lanes: tuple[LaneConfig, ...] = ()
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -158,6 +160,7 @@ def load_config(
         paper_starting_cash=personal.paper_starting_cash,
         pre_open_warmup_minutes=personal.pre_open_warmup_minutes,
         regular_trading_only=personal.regular_trading_only,
+        max_candle_staleness_days=personal.max_candle_staleness_days,
         symbols=symbols,
         lanes=lanes,
         risk=risk,
@@ -189,6 +192,7 @@ def load_personal_config(path: Path | str | None = None) -> PersonalConfig:
         paper_starting_cash=float(payload.get("paper_starting_cash", 10000.0)),
         pre_open_warmup_minutes=int(payload.get("pre_open_warmup_minutes", 5)),
         regular_trading_only=bool(payload.get("regular_trading_only", True)),
+        max_candle_staleness_days=int(payload.get("max_candle_staleness_days", 5)),
     )
 
 

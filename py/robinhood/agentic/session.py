@@ -97,10 +97,12 @@ class PaperSession:
                                 continue
 
                         self._reset_daily_trade_count_if_needed()
+                        position_quantity = self.paper_account.positions.get(normalized, 0.0)
                         entry = self.bot.analyze(
                             quote,
                             daily_trade_count=self._daily_trade_count,
                             strategy_name=lane.strategy,
+                            has_position=position_quantity > 0 if _is_crypto_lane(lane) else None,
                         )
                         decisions += 1
                         fill = self.paper_account.apply(entry, quote)
@@ -227,13 +229,20 @@ class BrokerSession:
                                 continue
 
                         self._reset_daily_trade_count_if_needed()
+                        position = None
+                        if _is_crypto_lane(lane):
+                            snapshot = self.broker.get_account_snapshot()
+                            position = snapshot.positions.get(normalized)
                         entry = self.bot.analyze(
                             quote,
                             daily_trade_count=self._daily_trade_count,
                             strategy_name=lane.strategy,
+                            has_position=bool(position and position.is_open) if _is_crypto_lane(lane) else None,
+                            entry_price=position.average_cost if position else None,
+                            peak_price=position.average_cost if position else None,
                         )
                         decisions += 1
-                        result = self._apply_broker(entry, quote.price)
+                        result = self._apply_broker(entry, quote.price, asset_class=lane.asset_class)
                         decision = entry.decision
                         print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {result}")
 
@@ -257,13 +266,13 @@ class BrokerSession:
             interrupted=interrupted,
         )
 
-    def _apply_broker(self, entry: JournalEntry, price: float) -> str:
+    def _apply_broker(self, entry: JournalEntry, price: float, asset_class: str = "equity") -> str:
         if not _is_approved_trade(entry):
             return "no broker review"
 
         decision = _decision_from_entry(entry)
         snapshot = self.broker.get_account_snapshot()
-        plan = plan_order_intent(decision, snapshot, self.config.risk, price)
+        plan = plan_order_intent(decision, snapshot, self.config.risk, price, asset_class=asset_class)
         if not plan.approved or plan.intent is None:
             self.bot.journal.append_execution(
                 entry,
@@ -393,7 +402,7 @@ class DailyCandleBrokerSession:
                     peak_price=_peak_price(candles, position.average_cost if position else None),
                 )
                 decisions += 1
-                result = self._apply_broker(entry, candles[-1].close)
+                result = self._apply_broker(entry, candles[-1].close, asset_class=lane.asset_class)
                 decision = entry.decision
                 print(f"{lane.name}/{symbol}: {decision['action']} - {entry.risk['reason']} - {result}")
                 plan_items.append(
@@ -422,13 +431,13 @@ class DailyCandleBrokerSession:
             positions={symbol: position.quantity for symbol, position in snapshot.positions.items()},
         )
 
-    def _apply_broker(self, entry: JournalEntry, price: float) -> str:
+    def _apply_broker(self, entry: JournalEntry, price: float, asset_class: str = "equity") -> str:
         if not _is_approved_trade(entry):
             return "no broker review"
 
         decision = _decision_from_entry(entry)
         snapshot = self.broker.get_account_snapshot()
-        plan = plan_order_intent(decision, snapshot, self.config.risk, price)
+        plan = plan_order_intent(decision, snapshot, self.config.risk, price, asset_class=asset_class)
         if not plan.approved or plan.intent is None:
             self.bot.journal.append_execution(
                 entry,
@@ -519,6 +528,7 @@ def _intent_payload(intent: OrderIntent | None) -> dict[str, object] | None:
         "symbol": intent.symbol,
         "side": intent.side,
         "type": intent.order_type,
+        "asset_class": intent.asset_class,
         "dollar_amount": intent.dollar_amount,
         "quantity": intent.quantity,
         "limit_price": intent.limit_price,
@@ -552,6 +562,10 @@ def _review_summary(raw: object) -> dict[str, object]:
     if alerts:
         summary["alerts"] = alerts
     return summary
+
+
+def _is_crypto_lane(lane: LaneConfig) -> bool:
+    return lane.asset_class.strip().lower() == "crypto"
 
 
 def _peak_price(candles: tuple[Candle, ...], entry_price: float | None) -> float | None:

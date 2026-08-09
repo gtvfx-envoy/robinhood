@@ -13,7 +13,12 @@ from .broker import AccountSnapshot, Broker, OrderIntent, OrderResult, OrderRevi
 from .config import AgenticConfig
 from .daemon_state import DaemonState, DaemonStateStore, PendingOrderState
 from .market_clock import MarketClock
-from .market_data import CandleCollector, HistoricalMarketDataSource, YahooDailyCandleSource
+from .market_data import (
+    CandleCollector,
+    HistoricalMarketDataSource,
+    ValidatedHistoricalMarketDataSource,
+    YahooDailyCandleSource,
+)
 from .session import DailyCandleBrokerSession, SessionResult
 
 
@@ -44,7 +49,9 @@ class PersistentDaemon:
         self.clock = clock or MarketClock(pre_open_warmup_minutes=config.pre_open_warmup_minutes)
         self.review_only = review_only
         self.max_live_order_dollars = max_live_order_dollars
-        self.candle_source = candle_source or YahooDailyCandleSource()
+        self.candle_source = candle_source or ValidatedHistoricalMarketDataSource(
+            YahooDailyCandleSource(), max_staleness_days=config.max_candle_staleness_days
+        )
         self.sleep_fn = sleep_fn
         self.now_fn = now_fn
         self.order_result_reconciler = order_result_reconciler
@@ -235,10 +242,18 @@ class StateBackedBroker(Broker):
         if blocked:
             return OrderResult(intent=intent, placed=False, status="rejected", reason=blocked)
 
+        submission = PendingOrderState(
+            ref_id=intent.ref_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            status="submit_attempted",
+            dollar_amount=dollars,
+        )
         state = replace(
             state,
             live_order_attempts=state.live_order_attempts + 1,
             live_notional_attempted=state.live_notional_attempted + dollars,
+            pending_orders=(*state.pending_orders, submission),
         )
         self.state_store.save(state)
 
@@ -246,13 +261,13 @@ class StateBackedBroker(Broker):
         if (result.placed or result.status == "unconfirmed") and self.order_result_reconciler is not None:
             result = self.order_result_reconciler(result)
         state = self.state_store.load()
-        pending = list(state.pending_orders)
+        pending = [order for order in state.pending_orders if order.ref_id != intent.ref_id]
         live_orders_submitted = state.live_orders_submitted
         live_notional_submitted = state.live_notional_submitted
         if result.placed:
             live_orders_submitted += 1
             live_notional_submitted += dollars
-        if result.placed or result.status == "unconfirmed":
+        if result.placed or result.status in {"unconfirmed", "submitted", "queued", "partially_filled"}:
             pending.append(
                 PendingOrderState(
                     ref_id=intent.ref_id,

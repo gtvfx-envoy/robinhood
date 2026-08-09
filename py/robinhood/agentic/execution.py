@@ -21,10 +21,14 @@ def plan_order_intent(
     snapshot: AccountSnapshot,
     risk: RiskConfig,
     price: float,
+    asset_class: str = "equity",
 ) -> ExecutionPlan:
     """Turn a risk-approved strategy decision into a broker intent."""
 
     symbol = decision.symbol.upper()
+    normalized_asset_class = asset_class.strip().lower()
+    if normalized_asset_class not in {"equity", "crypto"}:
+        return ExecutionPlan(False, f"unsupported asset class: {asset_class}")
     if not decision.is_trade:
         return ExecutionPlan(False, "no trade requested")
     if price <= 0:
@@ -58,9 +62,10 @@ def plan_order_intent(
                 symbol=symbol,
                 side="buy",
                 order_type="market",
+                asset_class=normalized_asset_class,
                 dollar_amount=round(dollars, 2),
-                market_hours="regular_hours",
-                time_in_force="gfd",
+                market_hours=_market_hours(normalized_asset_class),
+                time_in_force=_time_in_force(normalized_asset_class),
             ),
         )
 
@@ -74,12 +79,21 @@ def plan_order_intent(
             symbol=symbol,
             side="sell",
             order_type="market",
+            asset_class=normalized_asset_class,
             quantity=round(position.quantity, 6),
-            market_hours="regular_hours",
-            time_in_force="gfd",
+            market_hours=_market_hours(normalized_asset_class),
+            time_in_force=_time_in_force(normalized_asset_class),
         ),
     )
 
 
 def _open_position_count(snapshot: AccountSnapshot) -> int:
     return sum(1 for position in snapshot.positions.values() if position.is_open)
+
+
+def _market_hours(asset_class: str) -> str:
+    return "24_7" if asset_class == "crypto" else "regular_hours"
+
+
+def _time_in_force(asset_class: str) -> str:
+    return "gtc" if asset_class == "crypto" else "gfd"

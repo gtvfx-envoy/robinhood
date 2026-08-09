@@ -6,7 +6,7 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -46,6 +46,57 @@ class HistoricalMarketDataSource(ABC):
     @abstractmethod
     def get_daily_candles(self, symbol: str, range_: str = "1y") -> tuple[Candle, ...]:
         """Collect daily candles for a symbol."""
+
+
+class ValidatedHistoricalMarketDataSource(HistoricalMarketDataSource):
+    """Validate primary data and fail over to a separately configured source."""
+
+    def __init__(
+        self,
+        primary: HistoricalMarketDataSource,
+        fallback: HistoricalMarketDataSource | None = None,
+        max_staleness_days: int = 5,
+        today_fn=None,
+    ):
+        self.primary = primary
+        self.fallback = fallback
+        self.max_staleness_days = max_staleness_days
+        self.today_fn = today_fn or date.today
+
+    def get_daily_candles(self, symbol: str, range_: str = "1y") -> tuple[Candle, ...]:
+        errors: list[str] = []
+        for source in (self.primary, self.fallback):
+            if source is None:
+                continue
+            try:
+                candles = source.get_daily_candles(symbol, range_)
+                validate_daily_candles(candles, self.max_staleness_days, self.today_fn())
+                return candles
+            except MarketDataUnavailable as exc:
+                errors.append(str(exc))
+        raise MarketDataUnavailable(f"validated candles unavailable for {symbol}: {' | '.join(errors)}")
+
+
+def validate_daily_candles(candles: tuple[Candle, ...], max_staleness_days: int, today: date) -> None:
+    """Reject stale, future-dated, unordered, or impossible OHLC data."""
+
+    if not candles:
+        raise MarketDataUnavailable("no daily candles returned")
+    if max_staleness_days < 0:
+        raise ValueError("max_staleness_days must be non-negative")
+    previous: date | None = None
+    for candle in candles:
+        if previous is not None and candle.date <= previous:
+            raise MarketDataUnavailable("daily candles must have strictly increasing dates")
+        if min(candle.open, candle.high, candle.low, candle.close) <= 0:
+            raise MarketDataUnavailable("daily candles must have positive OHLC values")
+        if candle.low > min(candle.open, candle.close) or candle.high < max(candle.open, candle.close):
+            raise MarketDataUnavailable("daily candle OHLC values are inconsistent")
+        previous = candle.date
+    if candles[-1].date > today:
+        raise MarketDataUnavailable("daily candle timestamp is in the future")
+    if today - candles[-1].date > timedelta(days=max_staleness_days):
+        raise MarketDataUnavailable(f"daily candles are stale: last={candles[-1].date.isoformat()}")
 
 
 class YahooChartMarketDataSource(MarketDataSource):

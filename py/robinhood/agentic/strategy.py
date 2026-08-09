@@ -35,6 +35,17 @@ class Decision:
         return self.action in {"BUY", "SELL"}
 
 
+@dataclass(frozen=True)
+class CryptoTrendSnapshot:
+    """Deterministic crypto scalp inputs used to explain every decision."""
+
+    fast_ema: float
+    slow_ema: float
+    rsi: float
+    tick_move_pct: float
+    edge_pct: float
+
+
 class SimpleMomentumStrategy:
     """Buy/sell only when the current price moves enough from previous close."""
 
@@ -322,13 +333,38 @@ class CryptoScalpStrategy:
         self.entry_price: dict[str, float] = {}
         self.peak_price: dict[str, float] = {}
 
-    def evaluate(self, quote: QuoteSnapshot) -> Decision:
+    def evaluate(
+        self,
+        quote: QuoteSnapshot,
+        has_position: bool | None = None,
+        entry_price: float | None = None,
+        peak_price: float | None = None,
+    ) -> Decision:
         symbol = quote.symbol.upper()
+        if quote.price <= 0:
+            return Decision(
+                symbol=symbol,
+                action="HOLD",
+                confidence=0.0,
+                reason="crypto scalp price must be positive",
+            )
+
         prices = self.history[symbol]
         prices.append(quote.price)
 
-        if symbol in self.entry_price:
-            return self._evaluate_exit(symbol, quote.price)
+        position_open = symbol in self.entry_price if has_position is None else has_position
+        if position_open:
+            resolved_entry = _first_positive(entry_price, self.entry_price.get(symbol), quote.price)
+            resolved_peak = _first_positive(peak_price, self.peak_price.get(symbol), resolved_entry, quote.price)
+            if prices:
+                resolved_peak = max(resolved_peak, max(prices))
+            self.entry_price[symbol] = resolved_entry
+            self.peak_price[symbol] = resolved_peak
+            return self._evaluate_exit(symbol, quote.price, resolved_entry, resolved_peak)
+
+        if has_position is False:
+            self.entry_price.pop(symbol, None)
+            self.peak_price.pop(symbol, None)
 
         required = max(self.slow_period, self.rsi_period) + 1
         if len(prices) < required:
@@ -339,22 +375,24 @@ class CryptoScalpStrategy:
                 reason=f"warming up crypto scalp history {len(prices)}/{required}",
             )
 
-        fast = _ema(list(prices)[-self.fast_period :])
-        slow = _ema(list(prices)[-self.slow_period :])
-        rsi = _rsi(list(prices), self.rsi_period)
-        previous = list(prices)[-2]
-        tick_move_pct = ((quote.price - previous) / previous) * 100.0 if previous > 0 else 0.0
-        edge_pct = ((fast - slow) / slow) * 100.0 if slow > 0 else 0.0
+        trend = _crypto_trend_snapshot(list(prices), self.fast_period, self.slow_period, self.rsi_period)
 
-        if edge_pct >= self.min_edge_pct and tick_move_pct > 0 and self.buy_rsi_min <= rsi <= self.buy_rsi_max:
+        if (
+            trend.edge_pct >= self.min_edge_pct
+            and trend.tick_move_pct > 0
+            and self.buy_rsi_min <= trend.rsi <= self.buy_rsi_max
+        ):
             self.entry_price[symbol] = quote.price
             self.peak_price[symbol] = quote.price
-            confidence = min(edge_pct / max(self.min_edge_pct * 2, 0.01), 1.0)
+            confidence = min(trend.edge_pct / max(self.min_edge_pct * 2, 0.01), 1.0)
             return Decision(
                 symbol=symbol,
                 action="BUY",
                 confidence=confidence,
-                reason=f"crypto scalp entry edge={edge_pct:.2f}% rsi={rsi:.1f} tick={tick_move_pct:.2f}%",
+                reason=(
+                    f"crypto scalp entry fast={trend.fast_ema:.4f} slow={trend.slow_ema:.4f} "
+                    f"edge={trend.edge_pct:.2f}% rsi={trend.rsi:.1f} tick={trend.tick_move_pct:.2f}%"
+                ),
                 target_dollars=self.target_dollars,
             )
 
@@ -362,12 +400,14 @@ class CryptoScalpStrategy:
             symbol=symbol,
             action="HOLD",
             confidence=0.0,
-            reason=f"no scalp entry edge={edge_pct:.2f}% rsi={rsi:.1f} tick={tick_move_pct:.2f}%",
+            reason=(
+                f"no scalp entry fast={trend.fast_ema:.4f} slow={trend.slow_ema:.4f} "
+                f"edge={trend.edge_pct:.2f}% rsi={trend.rsi:.1f} tick={trend.tick_move_pct:.2f}%"
+            ),
         )
 
-    def _evaluate_exit(self, symbol: str, price: float) -> Decision:
-        entry = self.entry_price[symbol]
-        peak = max(self.peak_price.get(symbol, price), price)
+    def _evaluate_exit(self, symbol: str, price: float, entry: float, peak_price: float) -> Decision:
+        peak = max(peak_price, price)
         self.peak_price[symbol] = peak
         pnl_pct = ((price - entry) / entry) * 100.0
         drawdown_pct = ((price - peak) / peak) * 100.0 if peak > 0 else 0.0
@@ -426,6 +466,34 @@ def _ema(values: list[float]) -> float:
     for value in values[1:]:
         current = (value * alpha) + (current * (1.0 - alpha))
     return current
+
+
+def _crypto_trend_snapshot(
+    prices: list[float],
+    fast_period: int,
+    slow_period: int,
+    rsi_period: int,
+) -> CryptoTrendSnapshot:
+    fast = _ema(prices[-fast_period:])
+    slow = _ema(prices[-slow_period:])
+    previous = prices[-2]
+    current = prices[-1]
+    tick_move_pct = ((current - previous) / previous) * 100.0 if previous > 0 else 0.0
+    edge_pct = ((fast - slow) / slow) * 100.0 if slow > 0 else 0.0
+    return CryptoTrendSnapshot(
+        fast_ema=fast,
+        slow_ema=slow,
+        rsi=_rsi(prices, rsi_period),
+        tick_move_pct=tick_move_pct,
+        edge_pct=edge_pct,
+    )
+
+
+def _first_positive(*values: float | None) -> float:
+    for value in values:
+        if value is not None and value > 0:
+            return float(value)
+    return 0.0
 
 
 def _rsi(values: list[float], period: int) -> float:

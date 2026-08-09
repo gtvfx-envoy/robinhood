@@ -1,8 +1,9 @@
 import json
 import os
+import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -47,6 +48,7 @@ from robinhood.agentic.config import (
 )
 from robinhood.agentic.daemon import PersistentDaemon, StateBackedBroker
 from robinhood.agentic.daemon_state import (
+    DaemonLease,
     DaemonState,
     DaemonStateStore,
     PendingOrderState,
@@ -63,6 +65,7 @@ from robinhood.agentic.market_data import (
     QuoteCollector,
     StaticHistoricalMarketDataSource,
     StaticMarketDataSource,
+    ValidatedHistoricalMarketDataSource,
 )
 from robinhood.agentic.mcp_broker import AgenticMcpEquityBroker
 from robinhood.agentic.mcp_client import (
@@ -1255,6 +1258,19 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(decision.action, "SELL")
         self.assertIn("take profit", decision.reason)
 
+    def test_crypto_scalp_sells_external_open_position_after_restart(self):
+        strategy = CryptoScalpStrategy(take_profit_pct=0.2)
+
+        decision = strategy.evaluate(
+            QuoteSnapshot("BTC", price=101.0),
+            has_position=True,
+            entry_price=100.0,
+            peak_price=100.0,
+        )
+
+        self.assertEqual(decision.action, "SELL")
+        self.assertIn("take profit", decision.reason)
+
     def test_daily_trend_follow_buys_on_positive_daily_trend(self):
         strategy = DailyTrendFollowStrategy(
             short_period=3,
@@ -1456,6 +1472,21 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(plan.intent.side, "sell")
         self.assertAlmostEqual(plan.intent.quantity, 0.1)
 
+    def test_plan_order_intent_creates_crypto_buy_intent(self):
+        plan = plan_order_intent(
+            Decision("BTC", "BUY", 1.0, "test", target_dollars=5.0),
+            AccountSnapshot(cash=100.0),
+            RiskConfig(max_trade_dollars=10.0, max_open_positions=2),
+            price=50000.0,
+            asset_class="crypto",
+        )
+
+        self.assertTrue(plan.approved)
+        self.assertEqual(plan.intent.asset_class, "crypto")
+        self.assertEqual(plan.intent.market_hours, "24_7")
+        self.assertEqual(plan.intent.time_in_force, "gtc")
+        self.assertEqual(plan.intent.dollar_amount, 5.0)
+
     def test_plan_order_intent_rejects_sell_without_position(self):
         plan = plan_order_intent(
             Decision("SPY", "SELL", 1.0, "test"),
@@ -1480,6 +1511,24 @@ class AgenticBotTests(unittest.TestCase):
 
         self.assertEqual(snapshot.cash, 100.0)
         self.assertAlmostEqual(snapshot.positions["SPY"].quantity, 0.1)
+
+    def test_agentic_mcp_broker_reads_crypto_holdings(self):
+        client = _FakeMcpClient(
+            {
+                "get_portfolio": {"buying_power": "100.00"},
+                "get_equity_positions": {"results": []},
+                "get_crypto_holdings": {
+                    "results": [{"asset_code": "BTC", "total_quantity": "0.002", "average_cost": "50000.0"}]
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker("123", client)
+
+        snapshot = broker.get_account_snapshot()
+
+        self.assertEqual(snapshot.cash, 100.0)
+        self.assertAlmostEqual(snapshot.positions["BTC"].quantity, 0.002)
+        self.assertEqual(snapshot.positions["BTC"].average_cost, 50000.0)
 
     def test_agentic_mcp_broker_reads_data_wrapped_account_snapshot(self):
         client = _FakeMcpClient(
@@ -1519,6 +1568,46 @@ class AgenticBotTests(unittest.TestCase):
         snapshot = broker.get_account_snapshot()
 
         self.assertEqual(snapshot.cash, 125.0)
+
+    def test_agentic_mcp_broker_places_crypto_with_asset_quantity(self):
+        client = _FakeMcpClient(
+            {
+                "review_crypto_order": {"status": "approved", "asset_quantity": "0.0001"},
+                "place_crypto_order": {
+                    "crypto_order_id": "crypto-live-order",
+                    "state": "submitted",
+                    "asset_quantity": "0.0001",
+                    "average_price": "50000.0",
+                },
+            }
+        )
+        broker = AgenticMcpEquityBroker(
+            "123",
+            client,
+            live_trading_enabled=True,
+            auto_place_orders=True,
+            max_live_order_dollars=10.0,
+        )
+
+        result = broker.place_order(
+            OrderIntent("BTC", "buy", asset_class="crypto", dollar_amount=5.0, ref_id="local-order-id"),
+            price=50000.0,
+        )
+
+        self.assertTrue(result.placed)
+        self.assertEqual(result.order_id, "crypto-live-order")
+        self.assertIn("place_crypto_order", client.calls)
+        self.assertEqual(
+            client.call_arguments["place_crypto_order"],
+            {
+                "account_number": "123",
+                "symbol": "BTC-USD",
+                "side": "buy",
+                "type": "market",
+                "asset_quantity": "0.0001",
+                "ref_id": "local-order-id",
+            },
+        )
 
     def test_agentic_mcp_broker_review_only_does_not_place(self):
         client = _FakeMcpClient(
@@ -2224,6 +2313,43 @@ class AgenticBotTests(unittest.TestCase):
         self.assertEqual(rows[1]["execution"]["order_intent"]["symbol"], "AAPL")
         self.assertEqual(rows[1]["execution"]["order_intent"]["dollar_amount"], 10.0)
 
+    def test_broker_session_routes_crypto_lane_to_crypto_sell_intent(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quote_path = Path(tmp_dir) / "quotes.json"
+            journal_path = Path(tmp_dir) / "decisions.jsonl"
+            quote_path.write_text(json.dumps({"BTC": {"price": 101.0, "previous_close": 100.0}}), encoding="utf-8")
+            config = AgenticConfig(
+                broker="agentic_mcp",
+                dry_run=True,
+                journal_path=str(journal_path),
+                symbols=SymbolConfig(crypto=("BTC",)),
+                lanes=(LaneConfig("crypto", symbols=("BTC",), strategy="crypto_scalp", asset_class="crypto"),),
+                risk=RiskConfig(max_trade_dollars=5.0),
+            )
+            broker = _FakeReviewBroker(
+                cash=100.0,
+                positions={"BTC": Position("BTC", quantity=0.01, average_cost=100.0)},
+            )
+            session = BrokerSession(
+                config=config,
+                quote_provider=JsonQuoteProvider(quote_path),
+                broker=broker,
+                show_progress=False,
+            )
+
+            result = session.run(max_iterations=1)
+            rows = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(result.decisions, 1)
+        self.assertEqual(len(broker.orders), 1)
+        self.assertEqual(broker.orders[0].symbol, "BTC")
+        self.assertEqual(broker.orders[0].side, "sell")
+        self.assertEqual(broker.orders[0].asset_class, "crypto")
+        self.assertEqual(rows[0]["decision"]["action"], "SELL")
+        self.assertEqual(rows[1]["execution"]["order_intent"]["asset_class"], "crypto")
+
     def test_broker_session_journals_plan_rejection(self):
         import tempfile
 
@@ -2821,6 +2947,28 @@ class _FakeReviewBroker:
             status="reviewed",
             reason="live order placement disabled",
         )
+
+
+class SafetyControlTests(unittest.TestCase):
+    def test_daemon_lease_rejects_second_owner_and_releases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "daemon.lease.json"
+            with DaemonLease(path, owner_id="first"):
+                with self.assertRaisesRegex(RuntimeError, "daemon lease already held"):
+                    DaemonLease(path, owner_id="second").acquire()
+            DaemonLease(path, owner_id="second").acquire()
+            self.assertTrue(path.exists())
+
+    def test_validated_candle_source_falls_back_after_stale_primary(self):
+        stale = StaticHistoricalMarketDataSource({"SPY": (Candle("SPY", date(2026, 6, 1), 1, 1, 1, 1),)})
+        current = StaticHistoricalMarketDataSource({"SPY": (Candle("SPY", date(2026, 7, 10), 1, 1, 1, 1),)})
+        source = ValidatedHistoricalMarketDataSource(
+            stale,
+            fallback=current,
+            max_staleness_days=5,
+            today_fn=lambda: date(2026, 7, 10),
+        )
+        self.assertEqual(source.get_daily_candles("SPY")[-1].date, date(2026, 7, 10))
 
 
 class _FakePlacedBroker(_FakeReviewBroker):

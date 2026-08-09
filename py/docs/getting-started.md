@@ -33,6 +33,7 @@ and live-trading gates. Keep it outside the repository.
   "live_order_confirm": "",
   "journal_path": "<SERVICE_ROOT>/rh_agentic_decisions.jsonl",
   "quote_source_path": "<SERVICE_ROOT>/rh_quotes.json",
+  "max_candle_staleness_days": 5,
   "paper_starting_cash": 100.0,
   "risk": {
     "min_order_dollars": 1.0,
