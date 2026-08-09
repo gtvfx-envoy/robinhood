@@ -7,7 +7,7 @@ on:
 
 jobs:
   python:
-    runs-on: ["self-hosted", "Linux", "X64", "synology"]
+    runs-on: ["self-hosted", "Linux", "X64"]
     defaults:
       run:
         working-directory: py
