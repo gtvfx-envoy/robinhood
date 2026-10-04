@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     name: Build MkDocs site
-    runs-on: ["self-hosted", "Linux", "X64"]
+    runs-on: ["self-hosted", "Linux", "X64", "debian-13", "ci"]
     defaults:
       run:
         working-directory: py
@@ -49,7 +49,7 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    runs-on: ["self-hosted", "Linux", "X64"]
+    runs-on: ["self-hosted", "Linux", "X64", "debian-13", "ci"]
     needs: build
     environment:
       name: github-pages
